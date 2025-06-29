@@ -1,0 +1,150 @@
+#!./main
+
+#include <math.h>
+#include <assert.h>
+#include <stdio.h>
+#include <stdlib.h>
+#include <stdint.h>
+
+int x = 21;
+
+int baz(int xx, ...) { return 42; }
+
+int foo(void) { return x + x; }
+
+char *bar(void) { return "bye bye"; }
+
+struct Point { float x, y; };
+
+struct Point pt;
+
+float Point_magnitude(struct Point p) { return sqrtf(p.x * p.x + p.y * p.y); }
+
+int gbl[5];
+
+int gg[] = { -2, ~2, !2, 6+7, 6*7 };
+
+struct         G1 { int x, y; };
+typedef struct G2 { int x, y; } G2_t;
+typedef struct    { int x, y; } G3_t;
+
+int main(int argc, char **argv)
+{
+    printf("hello, world %d %s\n", foo(), bar());
+    printf("baz is %d %d %d\n", baz(1), baz(1, 2), baz(1, "two", 3));
+    printf("%d\n", 6*7);
+    int x  = 42;
+    int *p = &x;
+    printf("x is %d p is %p\n", *p, p);
+    *p = 666;
+    printf("x is %d %d\n", x, *p);
+    x = 123;
+    printf("x is %d %d\n", x, *p);
+    for (x = 0; x < 10; ++x) {
+	if (x == 5) printf("%%");
+	printf("%d ", x);
+    }
+    printf("\n");
+    while (x > 0) printf("%d ", --x);
+    printf("\n");
+    printf("%d\n", sizeof(char *));
+
+    int i, array[5] = { 2, 3, 5, 7, 11 };
+    printf("array size %d\n", sizeof(array));
+    for (i = 0;  i < 5;  ++i) printf("%d\n", array[i]);
+    for (i = 0;  i < 5;  ++i) array[i] = i*i;
+    for (i = 0;  i < 5;  ++i) printf("%d\n", array[i]);
+
+    for (i = 0;  i < 5;  ++i) array[i] = array[i] * array[i];
+    for (i = 0;  i < 5;  ++i) printf("%d\n", array[i]);
+
+    printf("%p\n", array);
+    printf("%p\n", array + 10);
+    p = array;
+    printf("%p\n", p);
+    printf("%p\n", array+5);
+
+    while (p < array+5) printf("%d\n", *p++);
+
+    printf("%p\n",  array);
+    printf("%p\n", &array);
+    printf("%p\n", &array[0]);
+
+    assert(array     == &array);
+    assert(array     == &array[0]);
+    assert(&array    == array);
+    assert(&array[0] == array);
+
+    char *sliteral  = "string literal";
+    char sarray[]   = "string array";
+    char tarray[13] = "string array";
+    char uarray[20] = "string array";
+    char varray[12] = "string array";
+
+    printf("%zd %s\n", sizeof(sliteral), sliteral);
+    printf("%zd %s\n", sizeof(sarray), sarray);
+    printf("%zd %s\n", sizeof(tarray), tarray);
+    printf("%zd %s\n", sizeof(uarray), uarray);
+    printf("%zd %s\n", sizeof(varray), uarray); // varray has unterminated string
+
+    printf("gbl %f %f -> %f\n", pt.x, pt.y, Point_magnitude(pt)); // global data is filled with zero
+    pt.x = 3.0;
+    pt.y = 4.0;
+    printf("gbl %f %f -> %f\n", pt.x, pt.y, Point_magnitude(pt));
+
+    struct Point qt;
+    printf("lcl %f %f -> %f\n", qt.x, qt.y, Point_magnitude(qt)); // local data is random
+    qt.x = 3.0;
+    qt.y = 4.0;
+    printf("lcl %f %f -> %f\n", qt.x, qt.y, Point_magnitude(qt));
+
+    struct Point rt = { 5.0, 12.0 };
+    printf("%f %f -> %f\n", rt.x, rt.y, Point_magnitude(rt));
+
+    for (i = 0;  i < 5;  ++i) printf("g %d\n", gbl[i]); // global data is filled with zero
+    int lcl[5];
+    for (i = 0;  i < 5;  ++i) printf("l %d\n", lcl[i]); // local data is random
+
+    int ll[] = { -2, ~2, !2, 6+7, 6*7 };
+
+    for (i = 0;  i < sizeof gg / sizeof(int);  ++i) printf("g %d ", gg[i]);    printf("\n");
+    for (i = 0;  i < sizeof ll / sizeof(int);  ++i) printf("l %d ", ll[i]);    printf("\n");
+
+    struct S { int a, b; };
+
+    typedef struct S SS;
+
+    SS s;
+
+    s.a = 42;
+    s.b = 666;
+    printf("%d %d\n", s.a, s.b);
+
+    struct         L1 { int x, y; };
+    typedef struct L2 { int x, y; } L2_t;
+    typedef struct    { int x, y; } L3_t;
+
+    struct G1 g1 = { 10, 11 };
+    G2_t      g2 = { 12, 13 };
+    G3_t      g3 = { 14, 15 };
+
+    struct L1 l1 = { 20, 21 };
+    L2_t      l2 = { 22, 23 };
+    L3_t      l3 = { 24, 25 };
+
+    printf("%d %d %d %d %d %d %d %d %d %d %d %d\n", g1.x, g1.y, g2.x, g2.y, g3.x, g3.y, l1.x, l1.y, l2.x, l2.y, l3.x, l3.y);
+
+    typedef L2_t L2_t_t;
+
+    L2_t_t ll2 = { 42, 666 };
+
+    printf("%d %d\n", ll2.x, ll2.y);
+
+    printf("passed\n");
+
+    return 0;
+}
+
+// Local Variables:
+// mode: c
+// End:

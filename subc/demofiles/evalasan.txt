@@ -1,0 +1,477 @@
+=== Running ASan-compiled executables ===
+Running ASan on dangling-pointer-2...
+=================================================================
+==2485==ERROR: AddressSanitizer: heap-use-after-free on address 0x502000000010 at pc 0x55f02356b377 bp 0x7ffec535cab0 sp 0x7ffec535caa0
+READ of size 4 at 0x502000000010 thread T0
+    #0 0x55f02356b376 in main /mnt/c/Users/matya/OneDrive - 学校法人　永守学園/大学院/SLVM/git/subc/demofiles/dangling-pointer-2.c:13
+    #1 0x7f1dc8d051c9 in __libc_start_call_main ../sysdeps/nptl/libc_start_call_main.h:58
+    #2 0x7f1dc8d0528a in __libc_start_main_impl ../csu/libc-start.c:360
+    #3 0x55f02356b1c4 in _start (/mnt/c/Users/matya/OneDrive - 学校法人　永守学園/大学院/SLVM/git/subc/demofiles/dangling-pointer-2+0x11c4) (BuildId: ecbe54ee59309757c26e4495b5b9e45944c6fe40)
+
+0x502000000010 is located 0 bytes inside of 4-byte region [0x502000000010,0x502000000014)
+freed by thread T0 here:
+    #0 0x7f1dc8fe94d8 in free ../../../../src/libsanitizer/asan/asan_malloc_linux.cpp:52
+    #1 0x55f02356b33f in main /mnt/c/Users/matya/OneDrive - 学校法人　永守学園/大学院/SLVM/git/subc/demofiles/dangling-pointer-2.c:12
+    #2 0x7f1dc8d051c9 in __libc_start_call_main ../sysdeps/nptl/libc_start_call_main.h:58
+    #3 0x7f1dc8d0528a in __libc_start_main_impl ../csu/libc-start.c:360
+    #4 0x55f02356b1c4 in _start (/mnt/c/Users/matya/OneDrive - 学校法人　永守学園/大学院/SLVM/git/subc/demofiles/dangling-pointer-2+0x11c4) (BuildId: ecbe54ee59309757c26e4495b5b9e45944c6fe40)
+
+previously allocated by thread T0 here:
+    #0 0x7f1dc8fea9c7 in malloc ../../../../src/libsanitizer/asan/asan_malloc_linux.cpp:69
+    #1 0x55f02356b29e in main /mnt/c/Users/matya/OneDrive - 学校法人　永守学園/大学院/SLVM/git/subc/demofiles/dangling-pointer-2.c:8
+    #2 0x7f1dc8d051c9 in __libc_start_call_main ../sysdeps/nptl/libc_start_call_main.h:58
+    #3 0x7f1dc8d0528a in __libc_start_main_impl ../csu/libc-start.c:360
+    #4 0x55f02356b1c4 in _start (/mnt/c/Users/matya/OneDrive - 学校法人　永守学園/大学院/SLVM/git/subc/demofiles/dangling-pointer-2+0x11c4) (BuildId: ecbe54ee59309757c26e4495b5b9e45944c6fe40)
+
+SUMMARY: AddressSanitizer: heap-use-after-free /mnt/c/Users/matya/OneDrive - 学校法人　永守学園/大学院/SLVM/git/subc/demofiles/dangling-pointer-2.c:13 in main
+Shadow bytes around the buggy address:
+  0x501ffffffd80: 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00
+  0x501ffffffe00: 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00
+  0x501ffffffe80: 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00
+  0x501fffffff00: 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00
+  0x501fffffff80: 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00
+=>0x502000000000: fa fa[fd]fa fa fa fa fa fa fa fa fa fa fa fa fa
+  0x502000000080: fa fa fa fa fa fa fa fa fa fa fa fa fa fa fa fa
+  0x502000000100: fa fa fa fa fa fa fa fa fa fa fa fa fa fa fa fa
+  0x502000000180: fa fa fa fa fa fa fa fa fa fa fa fa fa fa fa fa
+  0x502000000200: fa fa fa fa fa fa fa fa fa fa fa fa fa fa fa fa
+  0x502000000280: fa fa fa fa fa fa fa fa fa fa fa fa fa fa fa fa
+Shadow byte legend (one shadow byte represents 8 application bytes):
+  Addressable:           00
+  Partially addressable: 01 02 03 04 05 06 07 
+  Heap left redzone:       fa
+  Freed heap region:       fd
+  Stack left redzone:      f1
+  Stack mid redzone:       f2
+  Stack right redzone:     f3
+  Stack after return:      f5
+  Stack use after scope:   f8
+  Global redzone:          f9
+  Global init order:       f6
+  Poisoned by user:        f7
+  Container overflow:      fc
+  Array cookie:            ac
+  Intra object redzone:    bb
+  ASan internal:           fe
+  Left alloca redzone:     ca
+  Right alloca redzone:    cb
+==2485==ABORTING
+
+Running ASan on dangling-pointer...
+dangling-pointer: dangling-pointer.c:13: main: Assertion `ptr != 0' failed.
+
+Running ASan on invalid-free...
+
+Running ASan on invalid-pointer...
+AddressSanitizer:DEADLYSIGNAL
+=================================================================
+==2506==ERROR: AddressSanitizer: SEGV on unknown address 0x00009bd53a1a (pc 0x5596cc7bb37c bp 0x7ffc2936d680 sp 0x7ffc2936d5f0 T0)
+==2506==The signal is caused by a READ memory access.
+    #0 0x5596cc7bb37c in main /mnt/c/Users/matya/OneDrive - 学校法人　永守学園/大学院/SLVM/git/subc/demofiles/invalid-pointer.c:16
+    #1 0x7fbe69f5b1c9 in __libc_start_call_main ../sysdeps/nptl/libc_start_call_main.h:58
+    #2 0x7fbe69f5b28a in __libc_start_main_impl ../csu/libc-start.c:360
+    #3 0x5596cc7bb164 in _start (/mnt/c/Users/matya/OneDrive - 学校法人　永守学園/大学院/SLVM/git/subc/demofiles/invalid-pointer+0x1164) (BuildId: 45aee295d09dbcf591b5732f22a17e21f791157b)
+
+AddressSanitizer can not provide additional info.
+SUMMARY: AddressSanitizer: SEGV /mnt/c/Users/matya/OneDrive - 学校法人　永守学園/大学院/SLVM/git/subc/demofiles/invalid-pointer.c:16 in main
+==2506==ABORTING
+
+Running ASan on memory-leak...
+
+=================================================================
+==2512==ERROR: LeakSanitizer: detected memory leaks
+
+Direct leak of 40 byte(s) in 10 object(s) allocated from:
+    #0 0x7fef22f649c7 in malloc ../../../../src/libsanitizer/asan/asan_malloc_linux.cpp:69
+    #1 0x55ff83d9b26a in main /mnt/c/Users/matya/OneDrive - 学校法人　永守学園/大学院/SLVM/git/subc/demofiles/memory-leak.c:9
+    #2 0x7fef22c7f1c9 in __libc_start_call_main ../sysdeps/nptl/libc_start_call_main.h:58
+    #3 0x7fef22c7f28a in __libc_start_main_impl ../csu/libc-start.c:360
+    #4 0x55ff83d9b184 in _start (/mnt/c/Users/matya/OneDrive - 学校法人　永守学園/大学院/SLVM/git/subc/demofiles/memory-leak+0x1184) (BuildId: c2ef6d424e0703c7dc42f747d658136f85ce79d8)
+
+SUMMARY: AddressSanitizer: 40 byte(s) leaked in 10 allocation(s).
+
+Running ASan on multiple-free...
+=================================================================
+==2519==ERROR: AddressSanitizer: attempting double-free on 0x502000000010 in thread T0:
+    #0 0x7f339a2924d8 in free ../../../../src/libsanitizer/asan/asan_malloc_linux.cpp:52
+    #1 0x55fcc087d2c9 in main /mnt/c/Users/matya/OneDrive - 学校法人　永守学園/大学院/SLVM/git/subc/demofiles/multiple-free.c:11
+    #2 0x7f3399fae1c9 in __libc_start_call_main ../sysdeps/nptl/libc_start_call_main.h:58
+    #3 0x7f3399fae28a in __libc_start_main_impl ../csu/libc-start.c:360
+    #4 0x55fcc087d184 in _start (/mnt/c/Users/matya/OneDrive - 学校法人　永守学園/大学院/SLVM/git/subc/demofiles/multiple-free+0x1184) (BuildId: c39424fdc9882e50203616d8140f5a36af0cfa8a)
+
+0x502000000010 is located 0 bytes inside of 4-byte region [0x502000000010,0x502000000014)
+freed by thread T0 here:
+    #0 0x7f339a2924d8 in free ../../../../src/libsanitizer/asan/asan_malloc_linux.cpp:52
+    #1 0x55fcc087d2a2 in main /mnt/c/Users/matya/OneDrive - 学校法人　永守学園/大学院/SLVM/git/subc/demofiles/multiple-free.c:10
+    #2 0x7f3399fae1c9 in __libc_start_call_main ../sysdeps/nptl/libc_start_call_main.h:58
+    #3 0x7f3399fae28a in __libc_start_main_impl ../csu/libc-start.c:360
+    #4 0x55fcc087d184 in _start (/mnt/c/Users/matya/OneDrive - 学校法人　永守学園/大学院/SLVM/git/subc/demofiles/multiple-free+0x1184) (BuildId: c39424fdc9882e50203616d8140f5a36af0cfa8a)
+
+previously allocated by thread T0 here:
+    #0 0x7f339a2939c7 in malloc ../../../../src/libsanitizer/asan/asan_malloc_linux.cpp:69
+    #1 0x55fcc087d25e in main /mnt/c/Users/matya/OneDrive - 学校法人　永守学園/大学院/SLVM/git/subc/demofiles/multiple-free.c:8
+    #2 0x7f3399fae1c9 in __libc_start_call_main ../sysdeps/nptl/libc_start_call_main.h:58
+    #3 0x7f3399fae28a in __libc_start_main_impl ../csu/libc-start.c:360
+    #4 0x55fcc087d184 in _start (/mnt/c/Users/matya/OneDrive - 学校法人　永守学園/大学院/SLVM/git/subc/demofiles/multiple-free+0x1184) (BuildId: c39424fdc9882e50203616d8140f5a36af0cfa8a)
+
+SUMMARY: AddressSanitizer: double-free ../../../../src/libsanitizer/asan/asan_malloc_linux.cpp:52 in free
+==2519==ABORTING
+
+Running ASan on null-pointer...
+AddressSanitizer:DEADLYSIGNAL
+=================================================================
+==2525==ERROR: AddressSanitizer: SEGV on unknown address 0x000000000000 (pc 0x7ff9085c7d06 bp 0x7ffd6e1592f0 sp 0x7ffd6e158a78 T0)
+==2525==The signal is caused by a READ memory access.
+==2525==Hint: address points to the zero page.
+    #0 0x7ff9085c7d06 in __sanitizer::internal_strlen(char const*) ../../../../src/libsanitizer/sanitizer_common/sanitizer_libc.cpp:176
+    #1 0x7ff90851aebb in puts ../../../../src/libsanitizer/sanitizer_common/sanitizer_common_interceptors.inc:1236
+    #2 0x55e16e3d11a8 in main /mnt/c/Users/matya/OneDrive - 学校法人　永守学園/大学院/SLVM/git/subc/demofiles/null-pointer.c:7
+    #3 0x7ff9082c61c9 in __libc_start_call_main ../sysdeps/nptl/libc_start_call_main.h:58
+    #4 0x7ff9082c628a in __libc_start_main_impl ../csu/libc-start.c:360
+    #5 0x55e16e3d10c4 in _start (/mnt/c/Users/matya/OneDrive - 学校法人　永守学園/大学院/SLVM/git/subc/demofiles/null-pointer+0x10c4) (BuildId: bfd83401aa7446df7c84e14c42d8bc8ff93f5b63)
+
+AddressSanitizer can not provide additional info.
+SUMMARY: AddressSanitizer: SEGV ../../../../src/libsanitizer/sanitizer_common/sanitizer_libc.cpp:176 in __sanitizer::internal_strlen(char const*)
+==2525==ABORTING
+
+Running ASan on out-of-bounds-access-2...
+=================================================================
+==2531==ERROR: AddressSanitizer: stack-buffer-overflow on address 0x7f04b2a00024 at pc 0x55bc6711b417 bp 0x7fff79040e90 sp 0x7fff79040e80
+READ of size 4 at 0x7f04b2a00024 thread T0
+    #0 0x55bc6711b416 in main /mnt/c/Users/matya/OneDrive - 学校法人　永守学園/大学院/SLVM/git/subc/demofiles/out-of-bounds-access-2.c:9
+    #1 0x7f04b4bb41c9 in __libc_start_call_main ../sysdeps/nptl/libc_start_call_main.h:58
+    #2 0x7f04b4bb428a in __libc_start_main_impl ../csu/libc-start.c:360
+    #3 0x55bc6711b184 in _start (/mnt/c/Users/matya/OneDrive - 学校法人　永守学園/大学院/SLVM/git/subc/demofiles/out-of-bounds-access-2+0x1184) (BuildId: 9231cb967f969fb7d0d3e3b575ab5858113df818)
+
+Address 0x7f04b2a00024 is located in stack of thread T0 at offset 36 in frame
+    #0 0x55bc6711b258 in main /mnt/c/Users/matya/OneDrive - 学校法人　永守学園/大学院/SLVM/git/subc/demofiles/out-of-bounds-access-2.c:5
+
+  This frame has 1 object(s):
+    [32, 36) 'j' (line 6) <== Memory access at offset 36 overflows this variable
+HINT: this may be a false positive if your program uses some custom stack unwind mechanism, swapcontext or vfork
+      (longjmp and C++ exceptions *are* supported)
+SUMMARY: AddressSanitizer: stack-buffer-overflow /mnt/c/Users/matya/OneDrive - 学校法人　永守学園/大学院/SLVM/git/subc/demofiles/out-of-bounds-access-2.c:9 in main
+Shadow bytes around the buggy address:
+  0x7f04b29ffd80: 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00
+  0x7f04b29ffe00: 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00
+  0x7f04b29ffe80: 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00
+  0x7f04b29fff00: 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00
+  0x7f04b29fff80: 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00
+=>0x7f04b2a00000: f1 f1 f1 f1[04]f3 f3 f3 00 00 00 00 00 00 00 00
+  0x7f04b2a00080: 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00
+  0x7f04b2a00100: 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00
+  0x7f04b2a00180: 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00
+  0x7f04b2a00200: 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00
+  0x7f04b2a00280: 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00
+Shadow byte legend (one shadow byte represents 8 application bytes):
+  Addressable:           00
+  Partially addressable: 01 02 03 04 05 06 07 
+  Heap left redzone:       fa
+  Freed heap region:       fd
+  Stack left redzone:      f1
+  Stack mid redzone:       f2
+  Stack right redzone:     f3
+  Stack after return:      f5
+  Stack use after scope:   f8
+  Global redzone:          f9
+  Global init order:       f6
+  Poisoned by user:        f7
+  Container overflow:      fc
+  Array cookie:            ac
+  Intra object redzone:    bb
+  ASan internal:           fe
+  Left alloca redzone:     ca
+  Right alloca redzone:    cb
+==2531==ABORTING
+
+Running ASan on out-of-bounds-access...
+=================================================================
+==2537==ERROR: AddressSanitizer: stack-buffer-overflow on address 0x7f7732f00034 at pc 0x563d3bc724dc bp 0x7ffd54ea84a0 sp 0x7ffd54ea8490
+READ of size 4 at 0x7f7732f00034 thread T0
+    #0 0x563d3bc724db in main /mnt/c/Users/matya/OneDrive - 学校法人　永守学園/大学院/SLVM/git/subc/demofiles/out-of-bounds-access.c:8
+    #1 0x7f7734fb51c9 in __libc_start_call_main ../sysdeps/nptl/libc_start_call_main.h:58
+    #2 0x7f7734fb528a in __libc_start_main_impl ../csu/libc-start.c:360
+    #3 0x563d3bc72184 in _start (/mnt/c/Users/matya/OneDrive - 学校法人　永守学園/大学院/SLVM/git/subc/demofiles/out-of-bounds-access+0x1184) (BuildId: 837b411f14e19ea5619837b5875e4e74b1fb2a46)
+
+Address 0x7f7732f00034 is located in stack of thread T0 at offset 52 in frame
+    #0 0x563d3bc72258 in main /mnt/c/Users/matya/OneDrive - 学校法人　永守学園/大学院/SLVM/git/subc/demofiles/out-of-bounds-access.c:5
+
+  This frame has 1 object(s):
+    [32, 52) 'array' (line 6) <== Memory access at offset 52 overflows this variable
+HINT: this may be a false positive if your program uses some custom stack unwind mechanism, swapcontext or vfork
+      (longjmp and C++ exceptions *are* supported)
+SUMMARY: AddressSanitizer: stack-buffer-overflow /mnt/c/Users/matya/OneDrive - 学校法人　永守学園/大学院/SLVM/git/subc/demofiles/out-of-bounds-access.c:8 in main
+Shadow bytes around the buggy address:
+  0x7f7732effd80: 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00
+  0x7f7732effe00: 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00
+  0x7f7732effe80: 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00
+  0x7f7732efff00: 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00
+  0x7f7732efff80: 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00
+=>0x7f7732f00000: f1 f1 f1 f1 00 00[04]f3 f3 f3 f3 f3 00 00 00 00
+  0x7f7732f00080: 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00
+  0x7f7732f00100: 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00
+  0x7f7732f00180: 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00
+  0x7f7732f00200: 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00
+  0x7f7732f00280: 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00
+Shadow byte legend (one shadow byte represents 8 application bytes):
+  Addressable:           00
+  Partially addressable: 01 02 03 04 05 06 07 
+  Heap left redzone:       fa
+  Freed heap region:       fd
+  Stack left redzone:      f1
+  Stack mid redzone:       f2
+  Stack right redzone:     f3
+  Stack after return:      f5
+  Stack use after scope:   f8
+  Global redzone:          f9
+  Global init order:       f6
+  Poisoned by user:        f7
+  Container overflow:      fc
+  Array cookie:            ac
+  Intra object redzone:    bb
+  ASan internal:           fe
+  Left alloca redzone:     ca
+  Right alloca redzone:    cb
+==2537==ABORTING
+
+Running ASan on pointer-compare...
+pointer-compare: pointer-compare.c:17: main: Assertion `!"this should not be reached"' failed.
+
+Running ASan on pointer-increment...
+0x7fa397300034
+0x7fa397300038
+
+Running ASan on pointer-out-of-bounds-2...
+=================================================================
+==2556==ERROR: AddressSanitizer: stack-buffer-underflow on address 0x7f4863d0001c at pc 0x5604674a2434 bp 0x7fffda793a50 sp 0x7fffda793a40
+WRITE of size 4 at 0x7f4863d0001c thread T0
+    #0 0x5604674a2433 in main /mnt/c/Users/matya/OneDrive - 学校法人　永守学園/大学院/SLVM/git/subc/demofiles/pointer-out-of-bounds-2.c:9
+    #1 0x7f4865d7e1c9 in __libc_start_call_main ../sysdeps/nptl/libc_start_call_main.h:58
+    #2 0x7f4865d7e28a in __libc_start_main_impl ../csu/libc-start.c:360
+    #3 0x5604674a2104 in _start (/mnt/c/Users/matya/OneDrive - 学校法人　永守学園/大学院/SLVM/git/subc/demofiles/pointer-out-of-bounds-2+0x1104) (BuildId: 3bebc3d6b75ec73d03acdefaba1976abb6794bc2)
+
+Address 0x7f4863d0001c is located in stack of thread T0 at offset 28 in frame
+    #0 0x5604674a21d8 in main /mnt/c/Users/matya/OneDrive - 学校法人　永守学園/大学院/SLVM/git/subc/demofiles/pointer-out-of-bounds-2.c:5
+
+  This frame has 1 object(s):
+    [32, 52) 'array' (line 6) <== Memory access at offset 28 underflows this variable
+HINT: this may be a false positive if your program uses some custom stack unwind mechanism, swapcontext or vfork
+      (longjmp and C++ exceptions *are* supported)
+SUMMARY: AddressSanitizer: stack-buffer-underflow /mnt/c/Users/matya/OneDrive - 学校法人　永守学園/大学院/SLVM/git/subc/demofiles/pointer-out-of-bounds-2.c:9 in main
+Shadow bytes around the buggy address:
+  0x7f4863cffd80: 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00
+  0x7f4863cffe00: 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00
+  0x7f4863cffe80: 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00
+  0x7f4863cfff00: 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00
+  0x7f4863cfff80: 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00
+=>0x7f4863d00000: f1 f1 f1[f1]00 00 04 f3 f3 f3 f3 f3 00 00 00 00
+  0x7f4863d00080: 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00
+  0x7f4863d00100: 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00
+  0x7f4863d00180: 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00
+  0x7f4863d00200: 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00
+  0x7f4863d00280: 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00
+Shadow byte legend (one shadow byte represents 8 application bytes):
+  Addressable:           00
+  Partially addressable: 01 02 03 04 05 06 07 
+  Heap left redzone:       fa
+  Freed heap region:       fd
+  Stack left redzone:      f1
+  Stack mid redzone:       f2
+  Stack right redzone:     f3
+  Stack after return:      f5
+  Stack use after scope:   f8
+  Global redzone:          f9
+  Global init order:       f6
+  Poisoned by user:        f7
+  Container overflow:      fc
+  Array cookie:            ac
+  Intra object redzone:    bb
+  ASan internal:           fe
+  Left alloca redzone:     ca
+  Right alloca redzone:    cb
+==2556==ABORTING
+
+Running ASan on pointer-out-of-bounds...
+=================================================================
+==2562==ERROR: AddressSanitizer: stack-buffer-overflow on address 0x7f5e8ad00034 at pc 0x5636589743e3 bp 0x7fffcd128250 sp 0x7fffcd128240
+WRITE of size 4 at 0x7f5e8ad00034 thread T0
+    #0 0x5636589743e2 in main /mnt/c/Users/matya/OneDrive - 学校法人　永守学園/大学院/SLVM/git/subc/demofiles/pointer-out-of-bounds.c:8
+    #1 0x7f5e8cd1c1c9 in __libc_start_call_main ../sysdeps/nptl/libc_start_call_main.h:58
+    #2 0x7f5e8cd1c28a in __libc_start_main_impl ../csu/libc-start.c:360
+    #3 0x563658974104 in _start (/mnt/c/Users/matya/OneDrive - 学校法人　永守学園/大学院/SLVM/git/subc/demofiles/pointer-out-of-bounds+0x1104) (BuildId: 2bc4487fb6ac5113b483306df70536d96294d160)
+
+Address 0x7f5e8ad00034 is located in stack of thread T0 at offset 52 in frame
+    #0 0x5636589741d8 in main /mnt/c/Users/matya/OneDrive - 学校法人　永守学園/大学院/SLVM/git/subc/demofiles/pointer-out-of-bounds.c:5
+
+  This frame has 1 object(s):
+    [32, 52) 'array' (line 6) <== Memory access at offset 52 overflows this variable
+HINT: this may be a false positive if your program uses some custom stack unwind mechanism, swapcontext or vfork
+      (longjmp and C++ exceptions *are* supported)
+SUMMARY: AddressSanitizer: stack-buffer-overflow /mnt/c/Users/matya/OneDrive - 学校法人　永守学園/大学院/SLVM/git/subc/demofiles/pointer-out-of-bounds.c:8 in main
+Shadow bytes around the buggy address:
+  0x7f5e8acffd80: 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00
+  0x7f5e8acffe00: 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00
+  0x7f5e8acffe80: 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00
+  0x7f5e8acfff00: 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00
+  0x7f5e8acfff80: 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00
+=>0x7f5e8ad00000: f1 f1 f1 f1 00 00[04]f3 f3 f3 f3 f3 00 00 00 00
+  0x7f5e8ad00080: 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00
+  0x7f5e8ad00100: 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00
+  0x7f5e8ad00180: 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00
+  0x7f5e8ad00200: 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00
+  0x7f5e8ad00280: 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00
+Shadow byte legend (one shadow byte represents 8 application bytes):
+  Addressable:           00
+  Partially addressable: 01 02 03 04 05 06 07 
+  Heap left redzone:       fa
+  Freed heap region:       fd
+  Stack left redzone:      f1
+  Stack mid redzone:       f2
+  Stack right redzone:     f3
+  Stack after return:      f5
+  Stack use after scope:   f8
+  Global redzone:          f9
+  Global init order:       f6
+  Poisoned by user:        f7
+  Container overflow:      fc
+  Array cookie:            ac
+  Intra object redzone:    bb
+  ASan internal:           fe
+  Left alloca redzone:     ca
+  Right alloca redzone:    cb
+==2562==ABORTING
+
+Running ASan on segmentation-fault...
+AddressSanitizer:DEADLYSIGNAL
+=================================================================
+==2568==ERROR: AddressSanitizer: SEGV on unknown address 0x000000000000 (pc 0x556848ff31d8 bp 0x7ffd1f3d79a0 sp 0x7ffd1f3d7990 T0)
+==2568==The signal is caused by a WRITE memory access.
+==2568==Hint: address points to the zero page.
+    #0 0x556848ff31d8 in main /mnt/c/Users/matya/OneDrive - 学校法人　永守学園/大学院/SLVM/git/subc/demofiles/segmentation-fault.c:7
+    #1 0x7f40602911c9 in __libc_start_call_main ../sysdeps/nptl/libc_start_call_main.h:58
+    #2 0x7f406029128a in __libc_start_main_impl ../csu/libc-start.c:360
+    #3 0x556848ff30c4 in _start (/mnt/c/Users/matya/OneDrive - 学校法人　永守学園/大学院/SLVM/git/subc/demofiles/segmentation-fault+0x10c4) (BuildId: 73c36fe3921ce18f98825a1ba47b990e37d54e1c)
+
+AddressSanitizer can not provide additional info.
+SUMMARY: AddressSanitizer: SEGV /mnt/c/Users/matya/OneDrive - 学校法人　永守学園/大学院/SLVM/git/subc/demofiles/segmentation-fault.c:7 in main
+==2568==ABORTING
+
+Running ASan on uninitialised...
+
+Running ASan on use-after-free-2...
+=================================================================
+==2581==ERROR: AddressSanitizer: heap-use-after-free on address 0x502000000138 at pc 0x55f748bd4424 bp 0x7ffd816ff560 sp 0x7ffd816ff550
+READ of size 8 at 0x502000000138 thread T0
+    #0 0x55f748bd4423 in main /mnt/c/Users/matya/OneDrive - 学校法人　永守学園/大学院/SLVM/git/subc/demofiles/use-after-free-2.c:38
+    #1 0x7f0e2c3e01c9 in __libc_start_call_main ../sysdeps/nptl/libc_start_call_main.h:58
+    #2 0x7f0e2c3e028a in __libc_start_main_impl ../csu/libc-start.c:360
+    #3 0x55f748bd41c4 in _start (/mnt/c/Users/matya/OneDrive - 学校法人　永守学園/大学院/SLVM/git/subc/demofiles/use-after-free-2+0x11c4) (BuildId: a08322b3e02ae3eb96dda5f66581f90b5af1601d)
+
+0x502000000138 is located 8 bytes inside of 16-byte region [0x502000000130,0x502000000140)
+freed by thread T0 here:
+    #0 0x7f0e2c6c44d8 in free ../../../../src/libsanitizer/asan/asan_malloc_linux.cpp:52
+    #1 0x55f748bd43fe in main /mnt/c/Users/matya/OneDrive - 学校法人　永守学園/大学院/SLVM/git/subc/demofiles/use-after-free-2.c:39
+    #2 0x7f0e2c3e01c9 in __libc_start_call_main ../sysdeps/nptl/libc_start_call_main.h:58
+    #3 0x7f0e2c3e028a in __libc_start_main_impl ../csu/libc-start.c:360
+    #4 0x55f748bd41c4 in _start (/mnt/c/Users/matya/OneDrive - 学校法人　永守学園/大学院/SLVM/git/subc/demofiles/use-after-free-2+0x11c4) (BuildId: a08322b3e02ae3eb96dda5f66581f90b5af1601d)
+
+previously allocated by thread T0 here:
+    #0 0x7f0e2c6c59c7 in malloc ../../../../src/libsanitizer/asan/asan_malloc_linux.cpp:69
+    #1 0x55f748bd42a5 in newLink /mnt/c/Users/matya/OneDrive - 学校法人　永守学園/大学院/SLVM/git/subc/demofiles/use-after-free-2.c:14
+    #2 0x55f748bd4349 in main /mnt/c/Users/matya/OneDrive - 学校法人　永守学園/大学院/SLVM/git/subc/demofiles/use-after-free-2.c:26
+    #3 0x7f0e2c3e01c9 in __libc_start_call_main ../sysdeps/nptl/libc_start_call_main.h:58
+    #4 0x7f0e2c3e028a in __libc_start_main_impl ../csu/libc-start.c:360
+    #5 0x55f748bd41c4 in _start (/mnt/c/Users/matya/OneDrive - 学校法人　永守学園/大学院/SLVM/git/subc/demofiles/use-after-free-2+0x11c4) (BuildId: a08322b3e02ae3eb96dda5f66581f90b5af1601d)
+
+SUMMARY: AddressSanitizer: heap-use-after-free /mnt/c/Users/matya/OneDrive - 学校法人　永守学園/大学院/SLVM/git/subc/demofiles/use-after-free-2.c:38 in main
+Shadow bytes around the buggy address:
+  0x501ffffffe80: 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00
+  0x501fffffff00: 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00
+  0x501fffffff80: 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00
+  0x502000000000: fa fa 00 00 fa fa 00 00 fa fa 00 00 fa fa 00 00
+  0x502000000080: fa fa 00 00 fa fa 00 00 fa fa 00 00 fa fa 00 00
+=>0x502000000100: fa fa 00 00 fa fa fd[fd]fa fa fa fa fa fa fa fa
+  0x502000000180: fa fa fa fa fa fa fa fa fa fa fa fa fa fa fa fa
+  0x502000000200: fa fa fa fa fa fa fa fa fa fa fa fa fa fa fa fa
+  0x502000000280: fa fa fa fa fa fa fa fa fa fa fa fa fa fa fa fa
+  0x502000000300: fa fa fa fa fa fa fa fa fa fa fa fa fa fa fa fa
+  0x502000000380: fa fa fa fa fa fa fa fa fa fa fa fa fa fa fa fa
+Shadow byte legend (one shadow byte represents 8 application bytes):
+  Addressable:           00
+  Partially addressable: 01 02 03 04 05 06 07 
+  Heap left redzone:       fa
+  Freed heap region:       fd
+  Stack left redzone:      f1
+  Stack mid redzone:       f2
+  Stack right redzone:     f3
+  Stack after return:      f5
+  Stack use after scope:   f8
+  Global redzone:          f9
+  Global init order:       f6
+  Poisoned by user:        f7
+  Container overflow:      fc
+  Array cookie:            ac
+  Intra object redzone:    bb
+  ASan internal:           fe
+  Left alloca redzone:     ca
+  Right alloca redzone:    cb
+==2581==ABORTING
+
+Running ASan on use-after-free...
+=================================================================
+==2587==ERROR: AddressSanitizer: heap-use-after-free on address 0x502000000010 at pc 0x56310fc79377 bp 0x7ffc089d8170 sp 0x7ffc089d8160
+READ of size 4 at 0x502000000010 thread T0
+    #0 0x56310fc79376 in main /mnt/c/Users/matya/OneDrive - 学校法人　永守学園/大学院/SLVM/git/subc/demofiles/use-after-free.c:13
+    #1 0x7f15cbc261c9 in __libc_start_call_main ../sysdeps/nptl/libc_start_call_main.h:58
+    #2 0x7f15cbc2628a in __libc_start_main_impl ../csu/libc-start.c:360
+    #3 0x56310fc791c4 in _start (/mnt/c/Users/matya/OneDrive - 学校法人　永守学園/大学院/SLVM/git/subc/demofiles/use-after-free+0x11c4) (BuildId: a148a1ba6c865f1b648856c20fc5e40bbb11ba41)
+
+0x502000000010 is located 0 bytes inside of 4-byte region [0x502000000010,0x502000000014)
+freed by thread T0 here:
+    #0 0x7f15cbf0a4d8 in free ../../../../src/libsanitizer/asan/asan_malloc_linux.cpp:52
+    #1 0x56310fc7933f in main /mnt/c/Users/matya/OneDrive - 学校法人　永守学園/大学院/SLVM/git/subc/demofiles/use-after-free.c:12
+    #2 0x7f15cbc261c9 in __libc_start_call_main ../sysdeps/nptl/libc_start_call_main.h:58
+    #3 0x7f15cbc2628a in __libc_start_main_impl ../csu/libc-start.c:360
+    #4 0x56310fc791c4 in _start (/mnt/c/Users/matya/OneDrive - 学校法人　永守学園/大学院/SLVM/git/subc/demofiles/use-after-free+0x11c4) (BuildId: a148a1ba6c865f1b648856c20fc5e40bbb11ba41)
+
+previously allocated by thread T0 here:
+    #0 0x7f15cbf0b9c7 in malloc ../../../../src/libsanitizer/asan/asan_malloc_linux.cpp:69
+    #1 0x56310fc7929e in main /mnt/c/Users/matya/OneDrive - 学校法人　永守学園/大学院/SLVM/git/subc/demofiles/use-after-free.c:8
+    #2 0x7f15cbc261c9 in __libc_start_call_main ../sysdeps/nptl/libc_start_call_main.h:58
+    #3 0x7f15cbc2628a in __libc_start_main_impl ../csu/libc-start.c:360
+    #4 0x56310fc791c4 in _start (/mnt/c/Users/matya/OneDrive - 学校法人　永守学園/大学院/SLVM/git/subc/demofiles/use-after-free+0x11c4) (BuildId: a148a1ba6c865f1b648856c20fc5e40bbb11ba41)
+
+SUMMARY: AddressSanitizer: heap-use-after-free /mnt/c/Users/matya/OneDrive - 学校法人　永守学園/大学院/SLVM/git/subc/demofiles/use-after-free.c:13 in main
+Shadow bytes around the buggy address:
+  0x501ffffffd80: 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00
+  0x501ffffffe00: 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00
+  0x501ffffffe80: 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00
+  0x501fffffff00: 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00
+  0x501fffffff80: 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00
+=>0x502000000000: fa fa[fd]fa fa fa fa fa fa fa fa fa fa fa fa fa
+  0x502000000080: fa fa fa fa fa fa fa fa fa fa fa fa fa fa fa fa
+  0x502000000100: fa fa fa fa fa fa fa fa fa fa fa fa fa fa fa fa
+  0x502000000180: fa fa fa fa fa fa fa fa fa fa fa fa fa fa fa fa
+  0x502000000200: fa fa fa fa fa fa fa fa fa fa fa fa fa fa fa fa
+  0x502000000280: fa fa fa fa fa fa fa fa fa fa fa fa fa fa fa fa
+Shadow byte legend (one shadow byte represents 8 application bytes):
+  Addressable:           00
+  Partially addressable: 01 02 03 04 05 06 07 
+  Heap left redzone:       fa
+  Freed heap region:       fd
+  Stack left redzone:      f1
+  Stack mid redzone:       f2
+  Stack right redzone:     f3
+  Stack after return:      f5
+  Stack use after scope:   f8
+  Global redzone:          f9
+  Global init order:       f6
+  Poisoned by user:        f7
+  Container overflow:      fc
+  Array cookie:            ac
+  Intra object redzone:    bb
+  ASan internal:           fe
+  Left alloca redzone:     ca
+  Right alloca redzone:    cb
+==2587==ABORTING
+

@@ -1,0 +1,4933 @@
+# main.leg -- C parser + interpreter
+#
+# Last edited: 2025-03-21 12:07:42 by piumarta on m1mbp
+
+%{
+;
+#include <stdio.h>
+#include <stdlib.h>
+#include <stdint.h>
+#include <string.h>
+#include <math.h>
+#include <assert.h>
+#include <stdarg.h>
+#include <errno.h>
+
+#define TRACE	printf("TRACE %s:%d:%s\n", __FILE__, __LINE__, __PRETTY_FUNCTION__);
+
+void fatal(char *fmt, ...)
+{
+    va_list ap;
+    va_start(ap, fmt);
+    fprintf(stderr, "\n");
+    vfprintf(stderr, fmt, ap);
+    fprintf(stderr, "\n");
+    va_end(ap);
+    exit(1);
+}
+
+#define USEGC 1
+
+#if USEGC
+# include <gc/gc.h>
+# define MALLOC(N)	GC_malloc(N)
+# define CALLOC(N,S)	GC_malloc((N)*(S))
+# define REALLOC(P, N)	GC_realloc(P, N)
+# define FREE(P)	GC_free(P)
+# define STRDUP(S)	GC_strdup(S)
+#else
+# define MALLOC(N)	malloc(N)
+# define CALLOC(N,S)	calloc((N), (S))
+# define REALLOC(P, N)	realloc(P, N)
+# define FREE(P)	free(P)
+# define STRDUP(S)	strdup(S)
+#endif
+
+#define TAGBITS		2
+#define TAGMASK		((1UL << TAGBITS) - 1)
+
+#if TAGBITS >= 1
+# define TAGPTR		0b00
+# define TAGINT		0b01
+# if TAGBITS >= 2
+#   define TAGFLOAT	0b10
+# endif
+#endif
+
+#define indexableSize(A)	(sizeof(A) / sizeof(*(A)))
+
+typedef union Object Object, *oop;
+
+#define YYSTYPE oop
+
+#define _do_types(_)									\
+    _(Undefined) _(Input) _(Token )_(Integer) _(Float) _(Array) _(Symbol) _(Pair)	\
+    _(String) _(List)									\
+    _(Pointer) _(Struct)								\
+    _(Memory) _(Reference) _(Closure) _(Call) _(Block)					\
+    _(Addressof) _(Dereference) _(Sizeof) _(Unary)					\
+    _(Binary) _(Index) _(Member) _(Assign) _(Cast)					\
+    _(While) _(For) _(If) _(Return) _(Continue) _(Break)				\
+    _(Tvoid) _(Tchar) _(Tshort) _(Tint) _(Tlong) _(Tfloat) _(Tdouble)			\
+    _(Tpointer) _(Tarray) _(Tstruct) _(Tfunction) _(Tetc)				\
+    _(Scope) _(TypeName) _(Variable) _(Constant) _(Function) _(Primitive)		\
+    _(VarDecls) _(TypeDecls)
+
+#define _do_unaries(_)							\
+    _(NEG) _(NOT) _(COM) _(PREINC) _(PREDEC) _(POSTINC) _(POSTDEC)
+
+#define _do_binaries(_)					\
+    _(MUL) _(DIV) _(MOD) _(ADD) _(SUB) _(SHL) _(SHR)	\
+    _(LT) _(LE) _(GE) _(GT) _(EQ) _(NE)			\
+    _(BAND) _(BXOR) _(BOR) _(LAND) _(LOR)
+
+#define _(X) X,
+
+typedef enum { _do_types(_)    } type_t;
+typedef enum { _do_unaries(_)  } unary_t;
+typedef enum { _do_binaries(_) } binary_t;
+
+#undef _
+
+#define _(X) #X,
+
+char *unaryName(int op) {
+    static char *names[] = { _do_unaries(_) };
+    assert(0 <= op && op < indexableSize(names));
+    return names[op];
+}
+
+char *binaryName(int op) {
+    static char *names[] = { _do_binaries(_) };
+    assert(0 <= op && op < indexableSize(names));
+    return names[op];
+}
+
+#undef _
+
+#define _do_primitives(_)							\
+    _(printf) _(assert) _(malloc) _(free) _(exit) _(abort) _(atoi) _(sqrtf)
+
+#define _(X) oop s_##X = 0;
+_do_primitives(_)
+#undef _
+
+typedef oop (* prim_t)(int nargs, oop *arguments, oop environment);
+
+typedef oop (*cvt_t)(oop input);
+
+struct Undefined   { type_t _type; };
+struct Input 	   { type_t _type;  char *name;  int line;  FILE *file;  oop next; };
+struct Token	   { type_t _type;  char *text;  char *file;  int line; };
+struct Integer 	   { type_t _type;  long value; };
+struct Float 	   { type_t _type;  double value; };
+struct Pointer 	   { type_t _type;  oop type, base;  int offset, isfree; };
+struct Array 	   { type_t _type;  oop type, base;  int size; };
+struct Struct 	   { type_t _type;  oop type, memory; };
+struct Symbol  	   { type_t _type;  char *name; oop value; };
+struct Pair   	   { type_t _type;  oop head, tail; };
+struct String  	   { type_t _type;  int size;  char *elements; };
+struct List   	   { type_t _type;  int size;  oop *elements; };
+struct Memory      { type_t _type;  void *base;  size_t size;  int heap, free; };
+struct Reference   { type_t _type;  oop target; };
+struct Closure	   { type_t _type;  oop function, environment; };
+struct Call   	   { type_t _type;  oop function, arguments, token; };
+struct Block   	   { type_t _type;  oop statements; };
+struct Addressof   { type_t _type;  oop rhs, token; };
+struct Dereference { type_t _type;  oop rhs, token; };
+struct Sizeof      { type_t _type;  oop rhs, size, token; };
+struct Unary   	   { type_t _type;  unary_t  operator;  oop      rhs, token; };
+struct Binary  	   { type_t _type;  binary_t operator;  oop lhs, rhs, token; };
+struct Index  	   { type_t _type;  oop lhs, rhs, token; };
+struct Member  	   { type_t _type;  oop lhs, name, token; };
+struct Assign  	   { type_t _type;  oop lhs, rhs, token; };
+struct Cast   	   { type_t _type;  oop type, rhs;  cvt_t converter; };
+struct While   	   { type_t _type;  oop condition, expression; };
+struct For   	   { type_t _type;  oop initialiser, condition, update, body; };
+struct If      	   { type_t _type;  oop condition, consequent, alternate; };
+struct Return  	   { type_t _type;  oop value; };
+struct Continue	   { type_t _type; };
+struct Break  	   { type_t _type; };
+
+struct Tvoid	   { type_t _type; };
+struct Tchar	   { type_t _type; };
+struct Tshort	   { type_t _type; };
+struct Tint	   	   { type_t _type; };
+struct Tlong	   { type_t _type; };
+struct Tfloat	   { type_t _type; };
+struct Tdouble	   { type_t _type; };
+struct Tpointer	   { type_t _type;  oop target;};
+struct Tarray	   { type_t _type;  oop target;  oop size; };
+struct Tstruct 	   { type_t _type;  oop tag, members;  int size; };
+struct Tfunction   { type_t _type;  oop result, parameters; };
+struct Tetc        { type_t _type; };
+
+struct Scope	   { type_t _type;  oop names, values; };
+struct TypeName	   { type_t _type;  oop name, type; };
+struct Variable	   { type_t _type;  oop name, type, value,token; int isdead;};
+struct Constant	   { type_t _type;  oop name, type, value; };
+struct Function	   { type_t _type;  oop name, type, parameters, body, *code;  int variadic; };
+struct Primitive   { type_t _type;  oop name, type, parameters; prim_t function;  int variadic; };
+struct VarDecls	   { type_t _type;  oop type, variables; };
+struct TypeDecls   { type_t _type;  oop type, typenames, token; };
+
+union Object
+{
+    type_t             _type;
+# define _(X) struct X X;
+    _do_types(_)
+# undef _
+};
+
+void println(oop obj);
+char *toString(oop obj);
+
+int opt_O = 0; // optimise (use VM)
+int opt_v = 0; // verbose (print eval output, parser output, compiled code)
+int opt_x = 0; // disable execution
+
+Object _nil = { ._type = Undefined };
+
+#define nil	(&_nil)
+
+oop false = 0;
+oop true  = 0;
+
+#define isNil(O)	(nil   == (O))
+
+oop _new(size_t size, type_t type)
+{
+    oop obj = MALLOC(size);
+    obj->_type  = type;
+    return obj;
+}
+
+#define new(TYPE) _new(sizeof(struct TYPE), TYPE)
+
+#define CTOR0(Type)				\
+    oop new##Type(void) {			\
+	return new(Type);			\
+    }
+
+#define CTOR1(Type, A)				\
+    oop new##Type(oop A) {			\
+	oop obj = new(Type);			\
+	obj->Type.A = A;			\
+	return obj;				\
+    }
+
+#define CTOR2(Type, A, B)			\
+    oop new##Type(oop A, oop B) {		\
+	oop obj = new(Type);			\
+	obj->Type.A = A;			\
+	obj->Type.B = B;			\
+	return obj;				\
+    }
+
+#define CTOR3(Type, A, B, C)			\
+    oop new##Type(oop A, oop B, oop C) {	\
+	oop obj = new(Type);			\
+	obj->Type.A = A;			\
+	obj->Type.B = B;			\
+	obj->Type.C = C;			\
+	return obj;				\
+    }
+
+#define CTOR4(Type, A, B, C, D)			\
+    oop new##Type(oop A, oop B, oop C, oop D) {	\
+	oop obj = new(Type);			\
+	obj->Type.A = A;			\
+	obj->Type.B = B;			\
+	obj->Type.C = C;			\
+	obj->Type.D = D;			\
+	return obj;				\
+    }
+
+oop newInteger(long value)
+{
+# if TAGINT
+    value <<= 1; // make room for bit on right
+    value  |= 1; // set it to 1
+    return (oop )(intptr_t)value;
+# else
+    oop obj = new(Integer);
+    obj->Integer.value = value;
+    return obj;
+# endif
+}
+
+oop newPointer(oop type, oop base, int offset)
+{
+    oop obj = new(Pointer);
+    obj->Pointer.type   = type;
+    obj->Pointer.base   = base;
+    obj->Pointer.offset = offset;
+	obj->Pointer.isfree = 0;
+    return obj;
+}
+
+oop newArray(oop type, oop base, int size)
+{
+    oop obj = new(Array);
+    obj->Array.type = type;
+    obj->Array.base = base;
+    obj->Array.size = size;
+    return obj;
+}
+
+CTOR2(Struct, type, memory);
+
+oop newFloat(double value)
+{
+# if TAGFLOAT
+    union { double d;  intptr_t i;  oop p; } u;
+    u.d  = value;
+    u.i &= ~TAGMASK;
+    u.i |= TAGFLOAT;
+    return u.p;
+# else
+    oop obj = new(Float);
+    obj->Float.value = value;
+    return obj;
+# endif
+}
+
+char *typeName(int type)
+{
+    static char *typeNames[] = {
+#     define _(X) #X,
+	_do_types(_)
+#     undef _
+    };
+    if (type < 0 || type >= indexableSize(typeNames)) fatal("unknown type %d", type);
+    return typeNames[type];
+}
+
+type_t getType(oop obj)
+{
+# if TAGINT
+    if ((intptr_t)obj & 1) return Integer;
+# endif
+# if TAGFLOAT
+    if (((intptr_t)obj & TAGMASK) == TAGFLOAT) return Float;
+# endif
+    return obj->_type;
+}
+
+char *getTypeName(oop obj)	{ return typeName(getType(obj)); }
+
+int is(type_t type, oop obj)	{ return type == getType(obj); }
+
+oop _check(oop obj, type_t type, char *file, int line)
+{
+    if (type != getType(obj))
+	fatal("%s:%d: expected %s, got %s", file, line, typeName(type), getTypeName(obj));
+    return obj;
+}
+
+#define get(OBJ, TYPE, MEMBER)   	(_check(OBJ, TYPE, __FILE__, __LINE__)->TYPE.MEMBER)
+#define set(OBJ, TYPE, MEMBER, VALUE)   (_check(OBJ, TYPE, __FILE__, __LINE__)->TYPE.MEMBER = (VALUE))
+
+long _integerValue(oop obj)
+{
+# if TAGINT
+    assert(is(Integer, obj));
+    return (intptr_t)obj >> 1;
+# else
+    return get(obj, Integer,value);
+# endif
+}
+
+double _floatValue(oop obj)
+{
+# if TAGFLOAT
+    union { double d;  oop p; } u;
+    u.p = obj;
+    return u.d;
+# else
+    return get(obj, Float,value);
+# endif
+}
+
+long integerValue(oop obj)
+{
+    switch (getType(obj)) {
+	case Integer:	return _integerValue(obj);
+	case Float:	return _floatValue(obj);
+	default: 	break;
+    }
+    fatal("cannot convert %s to integer: %s", getTypeName(obj), toString(obj));
+    return 0;
+}
+
+double floatValue(oop obj)
+{
+    switch (getType(obj)) {
+	case Integer:	return _integerValue(obj);
+	case Float:	return _floatValue(obj);
+	default: 	break;
+    }
+    fatal("cannot convert type %d to float", getType(obj));
+    return 0;
+}
+
+oop newSymbol(char *name)
+{
+    oop obj = new(Symbol);
+    obj->Symbol.name = STRDUP(name);
+    obj->Symbol.value = nil;
+    return obj;
+}
+
+char *symbolName(oop obj)
+{
+    return get(obj, Symbol,name);
+}
+
+oop *symbols = 0;
+int     nsymbols = 0;
+
+oop intern(char *name)
+{
+    // find existing
+    int lo = 0, hi = nsymbols - 1;
+    while (lo <= hi) {
+	int     mid = (lo + hi) / 2;
+	oop sym = symbols[mid];
+	int     cmp = strcmp(name, get(sym, Symbol,name));
+	if      (cmp < 0) hi = mid - 1;
+	else if (cmp > 0) lo = mid + 1;
+	else              return sym; // target found
+    }
+    // create new
+    oop sym = newSymbol(name); // sizeof Symbol
+    // insert new symbol at index lo (where sym would have been found)
+    symbols = REALLOC(symbols, sizeof(*symbols) * (nsymbols + 1));
+    memmove(symbols + lo + 1,	// move entries to this location in the array
+	    symbols + lo,	// move entries from this location
+	    sizeof(*symbols) * (nsymbols - lo)	// element size * number to move
+	);
+    symbols[lo] = sym;
+    ++nsymbols;
+    return sym;
+}
+
+CTOR2(Pair, head, tail);
+
+oop head(oop pair)	{ return get(pair, Pair,head); }
+oop tail(oop pair)	{ return get(pair, Pair,tail); }
+
+oop assoc(oop alist, oop key)
+{
+    while (is(Pair, alist)) {
+	oop pair = head(alist);
+	if (key == get(pair, Pair,head)) return pair;
+	alist = tail(alist);
+    }
+    return nil;
+}
+
+oop newString(void)
+{
+    oop obj = new(String);
+    obj->String.elements = 0; // empty string
+    obj->String.size     = 0;
+    return obj;
+}
+
+oop newStringWith(char *s)
+{
+    oop obj = new(String);
+    obj->String.elements = STRDUP(s);
+    obj->String.size     = strlen(s);
+    return obj;
+}
+
+int String_append(oop string, int element)
+{
+    char *elements = get(string, String,elements);
+    int       size = get(string, String,size);
+    elements = REALLOC(elements, sizeof(*elements) * (size + 1));
+    set(string, String,elements, elements);
+    set(string, String,size, size + 1);
+    return elements[size] = element;
+}
+
+char *String_cString(oop string)
+{
+    String_append(string, 0);
+    get(string, String,size) -= 1;
+    return get(string, String,elements);
+}
+
+char *String_appendAll(oop string, char *chars, int len)
+{
+    char *elements = get(string, String,elements);
+    int       size = get(string, String,size);
+    int    newSize = size + len;
+    elements = REALLOC(elements, sizeof(*elements) * newSize);
+    memcpy(elements + size, chars, len);
+    set(string, String,elements, elements);
+    set(string, String,size, newSize);
+    return chars;
+}
+
+oop String_appendString(oop string, oop s)
+{
+    String_appendAll(string, get(s, String,elements), get(string, String,size));
+    return s;
+}
+
+char *String_format(oop string, char *format, ...)
+{
+    static char *buf    = 0;
+    static int   buflen = 0;
+    int n = 0;
+    for (;;) {
+	va_list ap;
+	va_start(ap, format);
+	n = vsnprintf(buf, buflen, format, ap);
+	va_end(ap);
+	if (n < buflen) break;
+	buflen = n + 1;
+	buf = realloc(buf, sizeof(*buf) * buflen);
+    }
+    String_appendAll(string, buf, n);
+    return buf;
+}
+
+#define List_do(ARR, VAR)							\
+    for (oop do_list = (ARR), VAR = nil;  do_list;  do_list = 0)		\
+	for (int do_size = get(do_list, List,size), do_index = 0;		\
+	     do_index < do_size && (VAR = do_list->List.elements[do_index]);	\
+	     ++do_index)
+
+oop newList(void)
+{
+    oop obj = new(List);
+    obj->List.elements = 0; // empty list
+    obj->List.size     = 0;
+    return obj;
+}
+
+oop List_append(oop list, oop element)
+{
+    oop *elements = get(list, List,elements);
+    int      size = get(list, List,size);
+    elements = REALLOC(elements, sizeof(*elements) * (size + 1));
+    set(list, List,elements, elements);
+    set(list, List,size, size + 1);
+    return elements[size] = element;
+}
+
+oop newList1(oop a)
+{
+    oop obj = newList();
+    List_append(obj, a);
+    return obj;
+}
+
+oop newList2(oop a, oop b)
+{
+    oop obj = newList1(a);
+    List_append(obj, b);
+    return obj;
+}
+
+int List_size(oop list)
+{
+    return get(list, List,size);
+}
+
+oop List_last(oop list)
+{
+    int  size = get(list, List,size);
+    oop *elts = get(list, List,elements);
+    assert(size > 0);
+    return elts[size - 1];
+}
+
+void kill_variable(oop obj){
+	switch(getType(obj)){
+		case Variable: {
+			get(obj,Variable,isdead) = 1;
+			//oop value = get(obj,Variable,value);
+			//if(getType(value)==Pointer){
+			//	if(getType(get(value, Pointer, base))==Variable){
+			//		kill_variable(get(value, Pointer, base));
+			//	}
+			//}							
+			break;
+		}
+		default: break;
+	}
+}
+
+void kill_scpp(oop scope){
+	if(getType(scope)==Scope){
+		oop vals = get(scope, Scope, values);
+		switch(getType(vals)){
+			case List: {
+				oop *elts=get(vals,List,elements);
+				int size = get(vals,List, size);
+				for (int i = 0;  i < size;  ++i){
+					kill_variable(elts[i]);
+				}
+				break;
+			}
+			default: break;
+		}
+	}
+}
+
+oop List_popLast(oop list)
+{
+    int  size = get(list, List,size);
+    oop *elts = get(list, List,elements);
+    assert(size > 0);
+    oop  last = elts[--size];
+	oop tlast = elts[size];
+	kill_scpp(tlast);
+    elts[size] = nil;
+    set(list, List,size, size);
+    return last;
+}
+
+oop List_get(oop list, int index)
+{
+    oop *elements = get(list, List,elements);
+    int      size     = get(list, List,size);
+    if (index >= size) fatal("list index %d out of bounds %d", index, size);
+    return elements[index];
+}
+
+oop List_set(oop list, int index, oop element)
+{
+    oop *elements = get(list, List,elements);
+    int      size     = get(list, List,size);
+    if (index >= size) fatal("list index %d out of bounds %d", index, size);
+    return elements[index] = element;
+}
+
+int List_equal(oop list, oop brray)
+{
+    if (List_size(list) != List_size(brray)) return 0;
+    List_do(list, a) {
+	oop b = get(brray, List,elements)[do_index];
+	if (a != b) return 0;
+    }
+    return 1;
+}
+
+#if 0
+
+struct keyval { oop key, val; };
+
+oop newMap(void)
+{
+    return newList();
+}
+
+int Map_find(oop map, oop key)
+{
+    int            size = get(map, List,size) / 2;
+    struct keyval *kvs  = (struct keyval *)get(map, List,elements);
+    int lo = 0, hi = size - 1;
+    while (lo <= hi) {
+	int mi = (lo + hi) / 2;
+	if      (key < kvs[mi].key)	hi = mi - 1;
+	else if (key > kvs[mi].key)	lo = mi + 1;
+	else				return mi;
+    }
+    return -1 - lo; // not found, encoding expected location
+}
+
+oop Map_set(oop map, oop key, oop val)
+{
+    int            size  = get(map, List,size) / 2;
+    struct keyval *kvs   = (struct keyval *)get(map, List,elements);
+    int            index = Map_find(map, key);
+    if (index > 0) return kvs[index].val = val;
+    index = -1 - index;
+    int last = size++;
+    kvs = REALLOC(kvs, sizeof(*kvs) * size);
+    while (last > index) {
+	kvs[last] = kvs[last - 1];
+	--last;
+    }
+    kvs[index].key = key;
+    return kvs[index].val = val;
+}
+
+oop Map_get(oop map, oop key)
+{
+    struct keyval *kvs   = (struct keyval *)get(map, List,elements);
+    int            index = Map_find(map, key);
+    if (index < 0) fatal("key not found in map");
+    return kvs[index].val;
+}
+
+#endif
+
+oop newMemory(void *base, size_t size, int heap)
+{
+  oop obj = new(Memory);
+  obj->Memory.base = base;
+  obj->Memory.size = size;
+  obj->Memory.heap = heap;
+  obj->Memory.free = 0;
+  return obj;
+}
+
+CTOR1(Reference,   target);
+CTOR2(Closure,     function, environment);
+CTOR3(Call,    	   function, arguments, token);
+CTOR1(Block,   	   statements);
+CTOR2(Addressof,   rhs, token);
+CTOR2(Dereference, rhs, token);
+
+oop newSizeof(oop operand, oop token)
+{
+    oop obj = new(Sizeof);
+    obj->Sizeof.rhs      = operand;
+    obj->Sizeof.size     = nil;
+    obj->Sizeof.token    = token;
+    return obj;
+}
+
+oop newUnary(unary_t operator, oop operand, oop token)
+{
+    oop obj = new(Unary);
+    obj->Unary.operator = operator;
+    obj->Unary.rhs      = operand;
+    obj->Unary.token    = token;
+    return obj;
+}
+
+oop newBinary(binary_t operator, oop lhs, oop rhs, oop token)
+{
+    oop obj = new(Binary);
+    obj->Binary.operator = operator;
+    obj->Binary.lhs      = lhs;
+    obj->Binary.rhs      = rhs;
+    obj->Binary.token    = token;
+    return obj;
+}
+
+CTOR3(Index,  lhs, rhs,  token);
+CTOR3(Member, lhs, name, token);
+CTOR3(Assign, lhs, rhs,  token);
+
+oop newCast(oop type, oop rhs)
+{
+    oop obj = new(Cast);
+    obj->Cast.type      = type;
+    obj->Cast.rhs       = rhs;
+    obj->Cast.converter = 0;
+    return obj;
+}
+
+CTOR2(While,  condition, expression);
+CTOR4(For,    initialiser, condition, update, body);
+CTOR3(If,     condition, consequent, alternate);
+CTOR1(Return, value);
+CTOR0(Continue);
+CTOR0(Break);
+
+CTOR0(Tvoid);
+CTOR0(Tchar);
+CTOR0(Tshort);
+CTOR0(Tint);
+CTOR0(Tlong);
+CTOR0(Tfloat);
+CTOR0(Tdouble);
+
+int isTypeName(oop obj)
+{
+    switch (getType(obj)) {
+	case Tvoid:
+	case Tchar:
+	case Tshort:
+	case Tint:
+	case Tlong:
+	case Tfloat:
+	case Tdouble:
+	case TypeName:	return 1;
+	default:	break;
+    }
+    return 0;
+}
+
+oop s_etc    = 0;
+oop t_etc    = 0;
+oop t_void   = 0;
+oop t_char   = 0;
+oop t_short  = 0;
+oop t_int    = 0;
+oop t_long   = 0;
+oop t_float  = 0;
+oop t_double = 0;
+oop t_pvoid  = 0;
+oop t_pchar  = 0;
+oop t_ppchar = 0;
+static oop pointers = 0;
+oop newTpointer(oop target)
+{
+    if (!pointers) pointers = newList();
+    List_do(pointers, t)
+	if (target == get(t, Tpointer,target))
+	    return t; // uniqe types allow comparison by identity
+    oop obj = new(Tpointer);
+    obj->Tpointer.target = target;
+    List_append(pointers, obj);
+    return obj;
+}
+
+
+oop newTarray(oop target, oop size)
+{
+    static oop arrays = 0;
+    if (!arrays) arrays = newList();
+    List_do(arrays, t)
+	if (target == get(t, Tarray,target) && size == get(t, Tarray,size))
+	    return t; // uniqe types allow comparison by identity
+    oop obj = new(Tarray);
+    obj->Tarray.target = target;
+    obj->Tarray.size   = size;
+    List_append(arrays, obj);
+    return obj;
+}
+
+oop tags = 0;
+
+oop newTstruct(oop tag, oop members)
+{
+    if (!isNil(tag)) {
+	List_do(tags, t) {
+	    if (tag == get(t, Tstruct,tag)) {
+		if (!is(Tstruct, t))
+		    fatal("tag '%s' redeclared as different type", symbolName(tag));
+		oop oldmembers = get(t, Tstruct,members);
+		if (!isNil(oldmembers) && !isNil(members)) {
+		    fatal("tag '%s' redefined", symbolName(tag));
+		}
+		if (isNil(oldmembers) && !isNil(members))
+		    set(t, Tstruct,members, members);
+		return t; // uniqe types allow comparison by identity
+	    }
+	}
+    }
+    oop obj = new(Tstruct);
+    obj->Tstruct.tag     = tag;
+    obj->Tstruct.members = members;
+    obj->Tstruct.size    = -1;         // incomplete type when negative
+    List_append(tags, obj);
+    return obj;
+}
+
+oop vars2types(oop vars)
+{
+    oop types = newList();
+    List_do(vars, var)
+	List_append(types, get(var, Variable,type));
+    return types;
+}
+
+oop newTfunction(oop result, oop parameters)
+{
+    static oop functions = 0;
+    if (!functions) functions = newList();
+    List_do(functions, t) {
+	oop tres = get(t, Tfunction,result);
+	oop tpar = get(t, Tfunction,parameters);
+	if (result == tres && List_equal(parameters, tpar))
+	    return t; // uniqe types allow comparison by identity
+    }
+    oop obj = new(Tfunction);
+    obj->Tfunction.result     = result;
+    obj->Tfunction.parameters = parameters;
+    List_append(functions, obj);
+    return obj;
+}
+
+CTOR0(Tetc);
+
+oop newScope(void)
+{
+    oop obj = new(Scope);
+    obj->Scope.names  = newList();
+    obj->Scope.values = newList();
+    return obj;
+}
+
+int Scope_find(oop scope, oop name)
+{
+    oop  names = get(scope, Scope,names);
+    int  size  = get(names, List,size);
+    oop *elts  = get(names, List,elements);
+    for (int i = size;  i--;) // fixme: binary search
+	if (name == elts[i])
+	    return i;
+    return -1;
+}
+
+oop scopes = 0;
+
+void Scope_begin(void)
+{
+    List_append(scopes, newScope());
+}
+
+void Scope_end(void)
+{
+    List_popLast(scopes);
+}
+
+oop Scope_lookup(oop name)
+{
+    int  n    = get(scopes, List,size);
+    oop *elts = get(scopes, List,elements);
+    while (n--) {
+	oop scope = elts[n];
+	int i = Scope_find(scope, name);
+	if (i >= 0) return get(get(scope, Scope,values), List,elements)[i];
+    }
+    return 0; // NOTE: 0 means undefined (rather than nil, which means uninitialised)
+}
+
+oop Scope_local(oop name)
+{
+    oop scope = List_last(scopes);
+    int i = Scope_find(scope, name);
+    if (i >= 0) return get(get(scope, Scope,values), List,elements)[i];
+    return 0; // NOTE: 0 means undefined (rather than nil, which means uninitialised)
+}
+
+oop Scope_redeclare(oop name, oop value)
+{
+    int  n    = get(scopes, List,size);
+    oop *elts = get(scopes, List,elements);
+    while (n--) {
+	oop scope = elts[n];
+	int i = Scope_find(scope, name);
+	if (i >= 0) return get(get(scope, Scope,values), List,elements)[i] = value;
+    }
+    return 0; // NOTE: 0 means undefined (rather than nil, which means uninitialised)
+}
+
+CTOR2(TypeName, name, type);
+CTOR3(Constant, name, type, value);
+
+oop newVariable(oop name, oop type, oop value, int isdead)
+{
+    oop obj = new(Variable);
+    obj->Variable.name       = name;
+    obj->Variable.type       = type;
+    obj->Variable.value      = value;
+    obj->Variable.isdead     = isdead;
+    return obj;
+}
+
+
+
+oop newFunction(oop name, oop type, oop parameters, oop body)
+{
+    oop obj = new(Function);
+    obj->Function.name       = name;
+    obj->Function.type       = type;
+    obj->Function.parameters = parameters;
+    obj->Function.body       = body;
+    obj->Function.code       = 0;
+    obj->Function.variadic   = 0;
+    return obj;
+}
+
+oop newPrimitive(oop name, oop type, oop parameters, prim_t function)
+{
+    oop obj = new(Primitive);
+    obj->Primitive.name       = name;
+    obj->Primitive.type       = type;
+    obj->Primitive.parameters = parameters;
+    obj->Primitive.function   = function;
+    obj->Primitive.variadic   = 0;
+    return obj;
+}
+
+oop makeType(oop base, oop type)
+{
+    switch (getType(type)) {
+	case Undefined:	return base;
+	case Symbol:	return base;
+	case Index:	return makeType(base, get(type, Index,lhs));
+	case Assign:	return makeType(base, get(type, Assign,lhs));
+	case Tpointer:	return newTpointer(makeType(base, get(type, Tpointer,target)));
+	case Tarray:	return newTarray(makeType(base, get(type, Tarray,target)),
+					 get(type, Tarray,size));
+	case Tfunction:	return newTfunction(base, get(type, Tfunction,parameters));
+	default:	break;
+    }
+    fatal("cannot make type from delcaration: %s %s", toString(base), toString(type));
+    return 0;
+}
+
+oop makeName(oop decl)
+{
+    switch (getType(decl)) {
+	case Undefined:
+	case Symbol:	return decl;
+	case Index:	return makeName(get(decl, Index,lhs));
+	case Assign:	return makeName(get(decl, Assign,lhs));
+	case Tpointer:	return makeName(get(decl, Tpointer,target));
+	case Tarray:	return makeName(get(decl, Tarray,target));
+	case Tfunction:	return makeName(get(decl, Tfunction,result));
+	default:	break;
+    }
+    fatal("cannot make name from delcaration: %s", toString(decl));
+    return 0;
+}
+
+oop makeBaseType(oop type)
+{
+    if (is(Symbol, type)) {
+	oop value = Scope_lookup(type);
+	if (!value || !is(TypeName, value))
+	    fatal("identifier '%s' does not name a type", type);
+	type = get(value, TypeName,type);
+    }
+    return type;
+}
+
+void VarDecls_append(oop vds, oop decl)
+{
+    List_append(get(vds, VarDecls,variables), decl);
+}
+
+oop newVarDecls(oop type, oop decl)
+{
+    oop obj = new(VarDecls);
+    obj->VarDecls.type         = type;
+    obj->VarDecls.variables    = newList();
+    VarDecls_append(obj, decl);
+    return obj;
+}
+
+void TypeDecls_append(oop tds, oop decl)
+{
+    List_append(get(tds, TypeDecls,typenames), decl);
+}
+
+oop newTypeDecls(oop type, oop decl, oop token)
+{
+    oop obj = new(TypeDecls);
+    obj->TypeDecls.type         = type;
+    obj->TypeDecls.typenames    = newList();
+    obj->TypeDecls.token        = token;
+    TypeDecls_append(obj, decl);
+    return obj;
+}
+
+#undef CTOR4
+#undef CTOR3
+#undef CTOR2
+#undef CTOR1
+#undef CTOR0
+
+oop baseType(oop type)
+{
+    switch (getType(type)) {
+	case Symbol: {
+	    oop value = Scope_lookup(type);
+	    if (!value || !is(TypeName, value))
+		fatal("baseType: '%s' does not name a type");
+	    return baseType(get(value, TypeName,type));
+	}
+	case Tvoid:
+	case Tchar:
+	case Tshort:
+	case Tint:
+	case Tlong:
+	case Tfloat:
+	case Tdouble:
+	case Tstruct:	return type;
+	case Tpointer:	return baseType(get(type, Tpointer,target));
+	case Tarray:	return baseType(get(type, Tarray,target));
+	case Tfunction:	return baseType(get(type, Tfunction,result));
+	default:	fatal("cannot find base type of %s", getTypeName(type));
+    }
+    return nil;
+}
+
+oop toStringOn(oop obj, oop str);
+
+void declareStringOn(oop type, oop name, oop str)
+{
+    switch (getType(type)) {
+	case Symbol: {
+	    oop value = Scope_lookup(type);
+	    if (!value || !is(TypeName, value))
+		fatal("declareString: '%s' does not name a type");
+	    declareStringOn(get(value, TypeName,type), name, str);
+	    return;
+	}
+	case Tvoid:
+	case Tchar:
+	case Tshort:
+	case Tint:
+	case Tlong:
+	case Tfloat:
+	case Tdouble:
+	    toStringOn(name, str);
+	    break;
+	case Tpointer:
+	    String_append(str, '*');
+	    declareStringOn(get(type, Tpointer,target), name, str);
+	    break;
+	case Tarray: {
+	    declareStringOn(get(type, Tarray,target), name, str);
+	    String_append(str, '[');
+	    toStringOn(get(type, Tarray,size), str);
+	    String_append(str, ']');
+	    break;
+	}
+	case Tstruct: {
+	    String_format(str, "struct %s %s", toString(get(type, Tstruct,tag)), symbolName(name));
+	    break;
+	}
+	case Tfunction: {
+	    declareStringOn(get(type, Tfunction,result), name, str);
+	    String_append(str, '(');
+	    List_do(get(type, Tfunction,parameters), parameter) {
+		if (do_index) String_appendAll(str, ", ", 2);
+		toStringOn(parameter, str);
+	    }
+	    String_append(str, ')');
+	    break;
+	}
+	default:
+	    fatal("cannot convert to declaration: %s", getTypeName(type));
+    }
+}
+
+char *declareString(oop type, oop name)
+{
+    oop str = newString();
+    declareStringOn(type, name, str);
+    String_append(str, 0);
+    return get(str, String,elements);
+}
+
+oop toStringOn(oop obj, oop str)
+{
+    switch (getType(obj)) {
+	case Undefined:
+	    String_appendAll(str, "<NIL>", 5);
+	    break;
+	case Token: {
+	    String_format(str, "%s:%d: ", get(obj, Token,file), get(obj, Token,line));
+	    break;
+	}
+	case Integer:
+	    String_format(str, "%d", _integerValue(obj));
+	    break;
+	case Float: {
+	    String_format(str, "%f", _floatValue(obj));
+	    break;
+	}
+	case Pointer: {
+	    oop base = get(obj, Pointer,base);
+	    switch (getType(base)) {
+		case Integer:
+		    String_format(str, "<%s %p", toString(get(obj, Pointer,type)), (void *)(intptr_t)_integerValue(base));
+		    break;
+		case Variable:
+		    String_format(str, "<%s &%s", toString(get(obj, Pointer,type)), symbolName(get(base, Variable,name)));
+		    break;
+		case Memory:
+		    String_format(str, "<%s %p[%d]", toString(get(obj, Pointer,type)), get(base, Memory,base), get(base, Memory,size));
+		    break;
+		default:
+		    fatal("cannot convert pointer base %s to string", toString(base));
+		    break;
+	    }
+	    String_format(str, "%+d>", get(obj, Pointer,offset));
+	    break;
+	}
+	case Array: {
+	    oop base = get(obj, Array,base);
+	    oop type = get(obj, Array,type);
+	    String_format(str, "[%s ", toString(type));
+	    switch (getType(base)) {
+		case Integer:
+		    String_format(str, "%p", (void *)(intptr_t)_integerValue(base));
+		    break;
+		case Variable:
+		    String_format(str, "&%s", symbolName(get(base, Variable,name)));
+		    break;
+		case Memory:
+		    String_format(str, "%p[%d]", get(base, Memory,base), get(base, Memory,size));
+		    break;
+		default:
+		    fatal("cannot convert array base %s to string", toString(base));
+		    break;
+	    }
+	    String_format(str, "%+d]", get(obj, Array,size));
+	    break;
+	}
+	case Symbol:
+	    String_format(str, "%s", get(obj, Symbol,name));
+	    break;
+	case String: {
+	    String_append(str, '"');
+	    String_appendString(str, obj);
+	    String_append(str, '"');
+	    break;
+	}
+	case Memory: {
+	    String_format(str, "<%p+%zd>", get(obj, Memory,base), get(obj, Memory,size));
+	    break;
+	}
+	case Cast: {
+	    String_append(str, '(');
+	    toStringOn(get(obj, Cast,type), str);
+	    String_append(str, ')');
+	    toStringOn(get(obj, Cast,rhs), str);
+	    break;
+	}
+	case Dereference: {
+	    String_append(str, '*');
+	    toStringOn(get(obj, Dereference,rhs), str);
+	    break;
+	}
+	case Addressof: {
+	    String_append(str, '&');
+	    toStringOn(get(obj, Addressof,rhs), str);
+	    break;
+	}
+	case Sizeof: {
+	    String_format(str, "sizeof(%d)", toString(get(obj, Sizeof,rhs)));
+	    break;
+	}
+	case Unary: {
+	    char *name = 0;
+	    oop rhs = get(obj, Unary,rhs);
+	    switch (get(obj, Unary,operator)) {
+		case NEG: 	name = "-";	break;
+		case NOT: 	name = "!";	break;
+		case COM: 	name = "~";	break;
+		case PREINC:	String_format(str, "++");  toStringOn(rhs, str);  return str;
+		case PREDEC:	String_format(str, "--");  toStringOn(rhs, str);  return str;
+		case POSTINC:	toStringOn(rhs, str);  String_format(str, "++");  return str;
+		case POSTDEC:	toStringOn(rhs, str);  String_format(str, "--");  return str;
+	    }
+	    String_format(str, "%s", name);
+	    toStringOn(rhs, str);
+	    break;
+	}
+	case Binary: {
+	    char *name = 0;
+	    char *lhs = toString(get(obj, Binary,lhs));
+	    char *rhs = toString(get(obj, Binary,rhs));
+	    switch (get(obj, Binary,operator)) {
+		case MUL:	name = "*";	break;
+		case DIV:	name = "/";	break;
+		case MOD:	name = "%";	break;
+		case ADD:	name = "+";	break;
+		case SUB:	name = "-";	break;
+		case SHL:	name = "<<";	break;
+		case SHR:	name = ">>";	break;
+		case LT:	name = "<";	break;
+		case LE:	name = "<=";	break;
+		case GE:	name = ">=";	break;
+		case GT:	name = ">";	break;
+		case EQ:	name = "==";	break;
+		case NE:	name = "!=";	break;
+		case BAND:	name = "&";	break;
+		case BXOR:	name = "^";	break;
+		case BOR:	name = "|";	break;
+		case LAND:	name = "&&";	break;
+		case LOR:	name = "||";	break;
+	    }
+	    String_format(str, "%s %s %s", lhs, name, rhs);
+	    break;
+	}
+	case Index: {
+	    toStringOn(get(obj, Index,lhs), str);
+	    String_append(str, '[');
+	    toStringOn(get(obj, Index,rhs), str);
+	    String_append(str, ']');
+	    break;
+	}
+	case Member: {
+	    toStringOn(get(obj, Member,lhs), str);
+	    String_append(str, '.');
+	    toStringOn(get(obj, Member,name), str);
+	    break;
+	}
+	case Assign: {
+	    toStringOn(get(obj, Assign,lhs), str);
+	    String_format(str, " = ");
+	    toStringOn(get(obj, Assign,rhs), str);
+	    break;
+	}
+	case Call: {
+	    toStringOn(get(obj, Call,function), str);
+	    String_append(str, '(');
+	    List_do(get(obj, Call,arguments), arg) {
+		if (do_index) String_format(str, ", ");
+		toStringOn(arg, str);
+	    }
+	    String_append(str, ')');
+	    break;
+	}
+	case If: {
+	    String_format(str, "if (");
+	    toStringOn(get(obj, If,condition), str);
+	    String_format(str, ") ");
+	    toStringOn(get(obj, If,consequent), str);
+	    if (nil != get(obj, If,alternate)) {
+		String_format(str, "; else ");
+		toStringOn(get(obj, If,alternate), str);
+	    }
+	    break;
+	}
+	case While: {
+	    String_format(str, "while (");
+	    toStringOn(get(obj, While,condition), str);
+	    String_format(str, ") ");
+	    toStringOn(get(obj, While,expression), str);
+	    break;
+	}
+	case For: {
+	    String_format(str, "for (");
+	    toStringOn(get(obj, For,initialiser), str);
+	    String_format(str, "; ");
+	    toStringOn(get(obj, For,condition), str);
+	    String_format(str, "; ");
+	    toStringOn(get(obj, For,update), str);
+	    String_format(str, ") ");
+	    toStringOn(get(obj, For,body), str);
+	    break;
+	}
+	case Tvoid:	String_format(str, "void");	break;
+	case Tchar:	String_format(str, "char");	break;
+	case Tshort:	String_format(str, "short");	break;
+	case Tint:	String_format(str, "int");	break;
+	case Tlong:	String_format(str, "long");	break;
+	case Tfloat:	String_format(str, "float");	break;
+	case Tdouble:	String_format(str, "double");	break;
+	case Tpointer: {
+	    oop target = get(obj, Tpointer,target);
+	    toStringOn(target, str);
+	    if (isTypeName(target)) String_append(str, ' ');
+	    String_append(str, '*');
+	    break;
+	}
+	case Tarray: {
+	    oop target = get(obj, Tarray,target);
+	    oop size   = get(obj, Tarray,size);
+	    toStringOn(target, str);
+	    String_append(str, '[');
+	    if (nil != size) toStringOn(size, str);
+	    String_append(str, ']');
+	    break;
+	}
+	case Tstruct: {
+	    String_format(str, "struct");
+	    oop tag     = get(obj, Tstruct,tag);
+	    oop members = get(obj, Tstruct,members);
+	    if (nil != tag) String_format(str, " %s", symbolName(tag));
+	    else if (nil != members) {
+		String_format(str, " {");
+		List_do(members, vdecls) toStringOn(vdecls, str);
+		String_format(str, "}");
+	    }
+	    break;
+	}
+	case Tfunction: {
+	    oop result = get(obj, Tfunction,result);
+	    oop params = get(obj, Tfunction,parameters);
+	    toStringOn(result, str);
+	    String_append(str, '(');
+	    List_do(params, param) {
+		if (do_index) String_appendAll(str, ", ", 2);
+		toStringOn(param, str);
+	    }
+	    String_append(str, ')');
+	    break;
+	}
+	case Reference: {
+	    String_append(str, '&');
+	    toStringOn(get(obj, Reference,target), str);
+	    break;
+	}
+	case Variable: {
+	    oop type = get(obj, Variable,type);
+	    oop name = get(obj, Variable,name);
+	    toStringOn(baseType(type), str);
+	    String_append(str, ' ');
+	    if (nil != name)
+		declareStringOn(type, name, str);
+	    else
+		toStringOn(type, str);
+	    break;
+	}
+	case Function: {
+	    toStringOn(get(get(obj, Function,type), Tfunction,result), str);
+	    String_append(str, ' ');
+	    toStringOn(get(obj, Function,name), str);
+	    String_append(str, '(');
+	    oop params = get(obj, Function,parameters);
+	    List_do(params, param) {
+		if (do_index) String_appendAll(str, ", ", 2);
+		toStringOn(param, str);
+	    }
+	    String_append(str, ')');
+	    break;
+	}
+	case Primitive: {
+	    String_format(str, "%s", symbolName(get(obj, Primitive,name)));
+	    break;
+	}
+	case VarDecls: {
+	    oop vars = get(obj, VarDecls,variables);
+	    List_do(vars, var) {
+		if (do_index) String_appendAll(str, ", ", 2);
+		toStringOn(var, str);
+	    }
+	    break;
+	}
+	case TypeDecls: {
+	    oop types = get(obj, TypeDecls,typenames);
+	    List_do(types, type) {
+		if (do_index) String_appendAll(str, ", ", 2);
+		toStringOn(type, str);
+	    }
+	    break;
+	}
+	default:
+	    fatal("cannot convert %s to string", getTypeName(obj));
+	    break;
+    }
+    return str;
+}
+
+char *toString(oop obj)
+{
+    oop str = toStringOn(obj, newString());
+    String_append(str, 0);
+    return get(str, String,elements);
+}
+
+char *tokloc(oop token)
+{
+    if (Token == getType(token)) return toString(token);
+    return "";
+}
+
+void printiln(oop obj, int indent)
+{
+    printf("%*s", indent*2, "");
+    switch (getType(obj)) {
+	case Undefined:	    printf("nil\n");	    			break;
+	case Input:	    printf("<%s>\n", get(obj, Input,name));	break;
+	case Token:	    printf("Token<%s:%d %s>\n",
+				   get(obj, Token,file),
+				   get(obj, Token,line),
+				   get(obj, Token,text));	break;
+	case Integer:	    printf("%ld\n", integerValue(obj));		break;
+	case Float:	    printf("%f\n",  floatValue(obj));		break;
+	case Pointer: {
+		if(get(obj, Pointer, isfree))fatal("freed memory read");
+	    printf("POINTER %s [%d]\n", toString(get(obj, Pointer,type)), get(obj, Pointer,offset));
+		printiln(get(obj, Pointer,base), indent+1);
+	    break;
+	}
+	case Array: {
+	    printf("ARRAY %s [%d]\n", toString(get(obj, Array,type)), get(obj, Array,size));
+	    printiln(get(obj, Array,base), indent+1);
+	    break;
+	}
+	case Struct: {
+	    printf("STRUCT %s @ %s\n",
+		   symbolName(get(get(obj, Struct,type), Tstruct,tag)),
+		   toString(get(obj, Struct,memory)));
+	    break;
+	}
+	case Symbol:	    printf("%s\n",  symbolName  (obj));	    	break;
+	case Pair: {
+	    printf("PAIR\n");
+	    printiln(head(obj), indent+1);
+	    printiln(tail(obj), indent+1);
+	    break;
+	}
+	case String: {
+	    char *elts = get(obj, String,elements);
+	    int   size = get(obj, String,size);
+	    printf("STRING %d \"", size);
+	    for (int i = 0;  i < size;  ++i) {
+		int c = elts[i];
+		if ('"' == c)
+		    printf("\\\"");
+		else if (31 < c && c < 127)
+		    putchar(c);
+		else
+		    printf("\\x%02x", c);
+	    }
+	    printf("\"\n");
+	    break;
+	}
+	case List: {
+	    oop *elts = get(obj, List,elements);
+	    int size = get(obj, List,size);
+	    printf("LIST %d\n", size);
+	    for (int i = 0;  i < size;  ++i)
+		printiln(elts[i], indent+1);
+	    break;
+	}
+	case Primitive: {
+	    printf("PRIMITIVE\n");
+	    printiln(get(obj, Primitive,name), indent+1);
+	    printiln(get(obj, Primitive,type), indent+1);
+	    break;
+	}
+	case Memory: {
+	    printf("MEMORY %p + %zd\n", get(obj, Memory,base), get(obj, Memory,size));
+	    break;
+	}
+	case Reference: {
+	    printf("REFERENCE\n");
+	    printiln(get(obj, Reference,target), indent+1);
+	    break;
+	}
+	case Closure: {
+	    printf("CLOSURE\n");
+	    printiln(get(obj, Closure,function), indent+1);
+	    break;
+	}
+	case Call: {
+	    printf("CALL\n");
+	    printiln(get(obj, Call,function ), indent+1);
+	    printiln(get(obj, Call,arguments), indent+1);
+	    break;
+	}
+	case Block: {
+	    printf("BLOCK\n");
+	    printiln(get(obj, Block,statements), indent+1);
+	    break;
+	}
+	case Addressof: {
+	    printf("ADDRESSOF\n");
+	    printiln(get(obj, Addressof,rhs), indent+1);
+	    break;
+	}
+	case Dereference: {
+	    printf("DEREFERENCE\n");
+	    printiln(get(obj, Dereference,rhs), indent+1);
+	    break;
+	}
+	case Sizeof: {
+	    printf("SIZEOF ");
+	    println(get(obj, Sizeof,size));
+	    printiln(get(obj, Sizeof,rhs), indent+1);
+	    break;
+	}
+	case Unary: {
+	    switch (get(obj, Unary,operator)) {
+		case NEG: 	printf("NEG\n");   	break;
+		case NOT: 	printf("NOT\n");   	break;
+		case COM: 	printf("COM\n");   	break;
+		case PREINC:	printf("PREINC\n");   	break;
+		case PREDEC:	printf("PREDEC\n");   	break;
+		case POSTINC:	printf("POSTINC\n");	break;
+		case POSTDEC:	printf("POSTDEC\n");   	break;
+	    }
+	    printiln(get(obj, Unary,rhs), indent+1);
+	    break;
+	}
+	case Binary: {
+	    switch (get(obj, Binary,operator)) {
+		case MUL: 	printf("MUL\n"); 	break;
+		case DIV: 	printf("DIV\n"); 	break;
+		case MOD: 	printf("MOD\n"); 	break;
+		case ADD: 	printf("ADD\n"); 	break;
+		case SUB: 	printf("SUB\n"); 	break;
+		case SHL: 	printf("SHL\n"); 	break;
+		case SHR: 	printf("SHR\n"); 	break;
+		case LT: 	printf("LT\n"); 	break;
+		case LE: 	printf("LE\n"); 	break;
+		case GE: 	printf("GE\n"); 	break;
+		case GT: 	printf("GT\n"); 	break;
+		case EQ: 	printf("EQ\n"); 	break;
+		case NE: 	printf("NE\n"); 	break;
+		case BAND: 	printf("BAND\n"); 	break;
+		case BXOR: 	printf("BXOR\n"); 	break;
+		case BOR: 	printf("BOR\n"); 	break;
+		case LAND: 	printf("LAND\n"); 	break;
+		case LOR: 	printf("LOR\n"); 	break;
+	    }
+	    printiln(get(obj, Binary,lhs), indent+1);
+	    printiln(get(obj, Binary,rhs), indent+1);
+	    break;
+	}
+	case Index: {
+	    printf("INDEX\n");
+	    printiln(get(obj, Index,lhs), indent+1);
+	    printiln(get(obj, Index,rhs), indent+1);
+	    break;
+	}
+	case Member: {
+	    printf("MEMBER\n");
+	    printiln(get(obj, Member,lhs ), indent+1);
+	    printiln(get(obj, Member,name), indent+1);
+	    break;
+	}
+	case Assign: {
+	    printf("ASSIGN\n");
+	    printiln(get(obj, Assign,lhs), indent+1);
+	    printiln(get(obj, Assign,rhs), indent+1);
+	    break;
+	}
+	case Cast: {
+	    printf("CAST\n");
+	    printiln(get(obj, Cast,type      ), indent+1);
+	    printiln(get(obj, Cast,rhs       ), indent+1);
+	    break;
+	}
+	case While: {
+	    printf("WHILE\n");
+	    printiln(get(obj, While,condition), indent+1);
+	    printiln(get(obj, While,expression), indent+1);
+	    break;
+	}
+	case For: {
+	    printf("For\n");
+	    printiln(get(obj, For,initialiser), indent+1);
+	    printiln(get(obj, For,condition),   indent+1);
+	    printiln(get(obj, For,update),      indent+1);
+	    printiln(get(obj, For,body),        indent+1);
+	    break;
+	}
+	case If: {
+	    printf("IF\n");
+	    printiln(get(obj, If,condition),  indent+1);
+	    printiln(get(obj, If,consequent), indent+1);
+	    printiln(get(obj, If,alternate),  indent+1);
+	    break;
+	}
+	case Return: {
+	    printf("RETURN\n");
+	    printiln(get(obj, Return,value),  indent+1);
+	    break;
+	}
+	case Continue: {
+	    printf("CONTINUE\n");
+	    break;
+	}
+	case Break: {
+	    printf("BREAK\n");
+	    break;
+	}
+	case Tvoid:	printf("<void:1>\n");	break;
+	case Tchar:	printf("<char:1>\n");	break;
+	case Tshort:	printf("<short:2>\n");	break;
+	case Tint:	printf("<int:4>\n");	break;
+	case Tlong:	printf("<long:8>\n");	break;
+	case Tfloat:	printf("<float:4>\n");	break;
+	case Tdouble:	printf("<double:8>\n");	break;
+	case Tetc:	printf("<...>\n");	break;
+	case Tpointer: {
+	    printf("Tpointer\n");
+	    printiln(get(obj, Tpointer,target), indent+1);
+	    break;
+	}
+	case Tarray: {
+	    printf("Tarray\n");
+	    printiln(get(obj, Tarray,size  ), indent+1);
+	    printiln(get(obj, Tarray,target), indent+1);
+	    break;
+	}
+	case Tstruct: {
+	    printf("Tstruct\n");
+	    printiln(get(obj, Tstruct,tag    ),  indent+1);
+	    if (indent < 1)
+		printiln(get(obj, Tstruct,members),  indent+1);
+	    break;
+	}
+	case Tfunction: {
+	    printf("Tfunction\n");
+	    printiln(get(obj, Tfunction,result    ),  indent+1);
+	    printiln(get(obj, Tfunction,parameters),  indent+1);
+	    break;
+	}
+	case VarDecls: {
+	    printf("VarDecls\n");
+	    printiln(get(obj, VarDecls,type        ),  indent+1);
+	    printiln(get(obj, VarDecls,variables   ),  indent+1);
+	    break;
+	}
+	case TypeDecls: {
+	    printf("TypeDecls\n");
+	    printiln(get(obj, TypeDecls,type        ),  indent+1);
+	    printiln(get(obj, TypeDecls,typenames   ),  indent+1);
+	    break;
+	}
+	case Scope: {
+	    printf("SCOPE ");
+	    oop names = get(obj, Scope,names);
+	    List_do(names, name) printf(" %s", toString(name));
+	    printf("\n");
+	    break;
+	}
+	case TypeName: {
+	    printf("TypeName\n");
+	    printiln(get(obj, TypeName,name), indent+1);
+	    printiln(get(obj, TypeName,type), indent+1);
+	    break;
+	}
+	case Variable: {
+	    printf("VARIABLE ");
+		printf("isdead:%d\n",get(obj, Variable,isdead ));
+	    printiln(get(obj, Variable,name ), indent+1);
+	    printiln(get(obj, Variable,type ), indent+1);
+	    printiln(get(obj, Variable,value), indent+1);
+		
+	    break;
+	}
+	case Constant: {
+	    printf("Constant\n");
+	    printiln(get(obj, Constant,name ), indent+1);
+	    printiln(get(obj, Constant,type ), indent+1);
+	    printiln(get(obj, Constant,value), indent+1);
+	    break;
+	};
+	case Function: {
+	    printf("Function %s\n", toString(get(obj, Function,name)));
+	    printiln(get(obj, Function,type      ), indent+1);
+	    printiln(get(obj, Function,parameters), indent+1);
+	    printiln(get(obj, Function,body      ), indent+1);
+	    break;
+	}
+    }
+}
+
+void println(oop obj)
+{
+    printiln(obj, 0);
+}
+
+oop input = 0;
+
+oop pushInput(char *name, FILE *file)
+{
+    oop obj = new(Input);
+    obj->Input.name = STRDUP(name);
+    obj->Input.line = 1;
+    obj->Input.file = file;
+    obj->Input.next = input;
+    input = obj;
+    return input;
+}
+
+void popInput(void)
+{
+    if (!input) return;
+    FILE *file = get(input, Input,file);
+    oop obj = input;
+    input = get(obj, Input,next);
+    if (file) {
+	fclose(file);
+	set(obj, Input,file, 0);
+    }
+}
+
+FILE *sysOpen(char *path)
+{
+    char abspath[1024];
+    snprintf(abspath, sizeof(abspath), "include/%s", path);
+    FILE *fp = fopen(abspath, "r");
+    if (!fp) fatal("#include <%s>: %s", path, strerror(errno));
+    return fp;
+}
+
+FILE *usrOpen(char *path)
+{
+    FILE *fp = fopen(path, "r");
+    if (!fp) fatal("#include \"%s\": %s", path, strerror(errno));
+    return fp;
+}
+
+int getChar(char *buf)
+{
+    if (input && get(input, Input,file)) {
+	int c = getc(get(input, Input,file));
+	if (c != EOF) {
+	    *buf = c;
+	    if ('\n' == c) get(input, Input,line) += 1;
+	    return 1;
+	}
+    }
+    return 0;
+}
+
+#define YY_INPUT(buf, result, max_size) { result = getChar(buf); }
+
+YYSTYPE yysval = 0;
+
+int errorLine = 0;
+
+void expected(oop where, char *what)
+{
+    fatal("%s:%d: %s expected near: %.*s",
+	  get(input, Input,name), errorLine,
+	  what, get(where, String,size), get(where, String,elements));
+}
+
+oop eval(oop exp);
+oop preval(oop exp);
+
+int lineNo = 1;
+
+oop newToken(char *text)
+{
+    oop obj = new(Token);
+    obj->Token.text = text;
+    assert(input);
+    obj->Token.file = get(input, Input,name);
+    obj->Token.line = lineNo;
+    return obj;
+}
+
+oop names = 0;
+oop lines = 0;
+
+void startInput(char *name)
+{
+    if (!names) names = newList();
+    if (!lines) lines = newList();
+    List_append(names, newStringWith(name));
+    List_append(lines, newInteger(lineNo));
+    lineNo = 1;
+}
+
+void endInput(void)
+{
+    if (lines && List_size(lines)) {
+	lineNo = _integerValue(List_popLast(lines));
+	List_popLast(names);
+    }
+}
+
+%}
+
+start	= - (   interp			{ yysval = 0 }
+	    |   include			{ yysval = 0 }
+	    | x:tldecl			{ yysval = x }
+	    |   !. @{ popInput() }	{ yysval = 0; endInput() }
+	    |  e:error			{ expected(e, "declaration") }
+	    )
+
+error	= @{ errorLine = get(input, Input,line) }
+	  < (![\n\r] .)* > 	{ $$ = newStringWith(yytext) }
+
+interp	= "#!" (!eol .)* eol
+
+include	= HASH INCLUDE (
+	    '<' < [a-zA-Z0-9_.]* > '>' @{ pushInput(yytext, sysOpen(yytext)) }
+	  | '"' < [a-zA-Z0-9_.]* > '"' @{ pushInput(yytext, usrOpen(yytext)) }
+	  )	{ startInput(yytext) }
+
+tldecl	= typedec | fundefn | primdef | vardecl
+
+typedec	= t:TYPEDEF
+	  n:tname d:decltor		{ d = newTypeDecls(n, d, t) }
+	  ( COMMA e:decltor		{ TypeDecls_append(d, e) }
+	  )* SEMI			{ $$ = d }
+
+vardecl	= t:tname d:inidecl		{ d = newVarDecls(t, d) }
+	  ( COMMA e:inidecl		{ VarDecls_append(d, e) }
+	  )* SEMI			{ $$ = d }
+
+tname	= VOID				{ $$ = t_void }
+	| CHAR				{ $$ = t_char }
+	| SHORT				{ $$ = t_short }
+	| INT				{ $$ = t_int  }
+	| LONG				{ $$ = t_long }
+	| FLOAT				{ $$ = t_float }
+	| DOUBLE			{ $$ = t_double }
+	| struct
+	| id
+
+struct	= STRUCT ( i:id m:members	{ $$ = newTstruct(  i,   m) }
+	  	 | i:id			{ $$ = newTstruct(  i, nil) }
+	  	 |      m:members	{ $$ = newTstruct(nil,   m) }
+		 | e:error		{ expected(e, "structure/union definition") }
+	  	 )
+
+members = LBRACE l:mkList ( v:vardecl	{ List_append(l, v) }
+	  	 	  )* ( RBRACE
+		   	     | e:error	{ expected(e, "struct/union member specification") }
+		   	     )		{ $$ = l }
+
+inidecl	= d:decltor ( t:ASSIGN ( e:initor	{ $$ = newAssign(d, e, t) }
+	  	      	       | e:error	{ expected(e, "variable initialiser") }
+			       )
+	  	    |				{ $$ = d }
+		    )
+
+decltor	= STAR d:decltor		{ $$ = newTpointer(d) }
+	| ddector
+
+ddector	= ( LPAREN d:decltor RPAREN
+	  | d:idopt
+          ) ( LBRAK e:expropt RBRAK	{ d = newTarray(d, e) }
+	    | p:params  		{ d = newTfunction(d, vars2types(p)) }
+	    )*				{ $$ = d }
+
+params	= LPAREN a:mkList
+          ( p:pdecl                     { List_append(a, p) }
+            ( COMMA p:pdecl             { List_append(a, p) }
+            )* )? ( ( COMMA ETC         { List_append(a, t_etc) }
+                    )? RPAREN           { $$ = a }
+                  | e:error             { expected(e, "parameter declaration") }
+                  )
+
+pdecl	= t:tname d:decltor		{ $$ = newVariable(d, t, nil, 0) }
+
+initor	= agrinit | expr
+
+agrinit	= LBRACE i:mkList
+	  ( j:initelt			{ List_append(i, j) }
+	    ( COMMA j:initelt		{ List_append(i, j) }
+	    )* COMMA? )? RBRACE		{ $$ = i }
+
+initelt	= t:DOT   i:id         u:ASSIGN e:expr	{ $$ = newAssign(newMember(nil, i, t), e, u) }
+	| t:LBRAK i:expr RBRAK u:ASSIGN e:expr	{ $$ = newAssign(newIndex (nil, i, t), e, u) }
+	| initor
+
+fundefn	= t:tname d:funid
+	  p:params b:block		{ $$ = newFunction(d, t, p, b) }
+
+funid	= STAR   d:funid		{ $$ = newTpointer(d) }
+	| LPAREN d:funid RPAREN		{ $$ = d }
+	| id
+
+primdef	= EXTERN t:tname d:funid
+	  p:params SEMI			{ $$ = newPrimitive(d, t, p, 0) }
+
+block	= LBRACE b:mkList
+	  ( s:stmt			{ List_append(b, s) }
+	  )* ( RBRACE			{ $$ = newBlock(b) }
+	     | e:error			{ expected(e, "statement") }
+	     )
+
+stmt	= WHILE c:cond s:stmt	 	{ $$ = newWhile(c, s) }
+	| FOR LPAREN
+	  ( i:expropt SEMI | i:vardecl )
+	  c:expropt SEMI u:expropt RPAREN
+	  b:stmt			{ $$ = newFor(i, c, u, b) }
+	| IF c:cond s:stmt
+	  ( ELSE t:stmt			{ $$ = newIf(c, s,   t) }
+	  |				{ $$ = newIf(c, s, nil) }
+	  )
+	| RETURN e:expropt SEMI		{ $$ = newReturn(e) }
+	| CONTINU SEMI			{ $$ = newContinue() }
+	| BREAK  SEMI			{ $$ = newBreak() }
+	| block
+	| e:expr SEMI			{ $$ = e }
+	| typedec
+	| vardecl
+
+cond	= LPAREN e:expr RPAREN		{ $$ = e }
+
+expropt	= expr | { $$ = nil }
+
+expr	= assign
+
+assign	= l:unary t:ASSIGN x:expr	{ $$ = newAssign(l, x, t) }
+	| logor
+
+logor	= l:logand  ( t:BARBAR r:logand	{ l  = newBinary(LOR, l, r, t) }
+	  	    )* 	   		{ $$ = l }
+
+logand	= l:bitor   ( t:ANDAND r:bitor	{ l  = newBinary(LAND, l, r, t) }
+	  	    )* 	   		{ $$ = l }
+
+bitor	= l:bitxor  ( t:BAR    r:bitxor	{ l  = newBinary(BOR, l, r, t) }
+	  	    )* 	   		{ $$ = l }
+
+bitxor	= l:bitand  ( t:HAT    r:bitand	{ l  = newBinary(BXOR, l, r, t) }
+	  	    )* 	   		{ $$ = l }
+
+bitand	= l:equal   ( t:AND    r:equal	{ l  = newBinary(BAND, l, r, t) }
+	  	    )* 	   		{ $$ = l }
+
+equal	= l:inequal ( t:EQUAL  r:inequal	{ l  = newBinary(EQ, l, r, t) }
+	  	    | t:NEQUAL r:inequal	{ l  = newBinary(NE, l, r, t) }
+	  	    )* 	   			{ $$ = l }
+
+inequal	= l:shift   ( t:LESS   r:shift	{ l  = newBinary(LT, l, r, t) }
+	  	    | t:LESSEQ r:shift	{ l  = newBinary(LE, l, r, t) }
+	  	    | t:GRTREQ r:shift	{ l  = newBinary(GE, l, r, t) }
+	  	    | t:GRTR   r:shift	{ l  = newBinary(GT, l, r, t) }
+	  	    )* 	   		{ $$ = l }
+
+shift	= l:sum     ( t:LSHIFT r:sum	{ l  = newBinary(SHL, l, r, t) }
+	  	    | t:RSHIFT r:sum	{ l  = newBinary(SHR, l, r, t) }
+	  	    )* 	   		{ $$ = l }
+
+sum	= l:prod    ( t:PLUS  r:prod	{ l  = newBinary(ADD, l, r, t) }
+	  	    | t:MINUS r:prod	{ l  = newBinary(SUB, l, r, t) }
+	  	    )* 	   		{ $$ = l }
+
+prod	= l:unary   ( t:STAR  r:unary	{ l  = newBinary(MUL, l, r, t) }
+	  	    | t:SLASH r:unary	{ l  = newBinary(DIV, l, r, t) }
+	  	    | t:PCENT r:unary	{ l  = newBinary(MOD, l, r, t) }
+	  	    )* 	   		{ $$ = l }
+
+unary	= t:MINUS  r:unary		{ $$ = newUnary(NEG,   	r, t) }
+	| t:PLING  r:unary		{ $$ = newUnary(NOT,   	r, t) }
+	| t:TILDE  r:unary		{ $$ = newUnary(COM,   	r, t) }
+	| t:STAR   r:unary		{ $$ = newDereference(  r, t) }
+	| t:AND    r:unary		{ $$ = newAddressof(    r, t) }
+	| t:PPLUS  r:unary		{ $$ = newUnary(PREINC, r, t) }
+	| t:MMINUS r:unary		{ $$ = newUnary(PREDEC, r, t) }
+	| t:SIZEOF
+	  (        r:unary		{ $$ = newSizeof(r, t) }
+    	  | LPAREN r:tnamdec RPAREN	{ $$ = newSizeof(r, t) }
+	  )
+	| 	 cast
+	|        postfix
+
+cast	= LPAREN t:tnamdec
+	  RPAREN r:unary		{ $$ = newCast(t, r) }
+
+tnamdec	= t:tname d:decltor		{ $$ = makeType(t, d) }
+
+postfix	= v:value ( t:LPAREN a:args RPAREN	{ v = newCall(v, a, t) }
+	  	  | t:LBRAK i:expr RBRAK	{ v = newIndex(v, i, t) }
+	  	  | t:PPLUS			{ v = newUnary(POSTINC, v, t) }
+	  	  | t:MMINUS			{ v = newUnary(POSTDEC, v, t) }
+		  | t:DOT i:id			{ v = newMember(v, i, t) }
+		  | t:ARROW i:id		{ v = newMember(newDereference(v, t), i, t) }
+	  	  )*				{ $$ = v }
+
+args	= a:mkList
+	  ( e:expr			{ List_append(a, e) }
+	    ( COMMA e:expr		{ List_append(a, e) }
+	    )* )? 			{ $$ = a }
+
+# index	= LBRAK e:expr RBRAK		{ $$ = e }
+
+value	= LPAREN e:expr RPAREN		{ $$ = e }
+	| float
+	| integer
+	| string
+       	| id
+
+mkList	=					{ $$ = newList() }
+
+float	= < [-+]? [0-9]* '.'  [0-9]+ ( [eE] [-+]? [0-9]+ )? >	-	{ $$ = newFloat(atof(yytext)) }
+	| < [-+]? [0-9]+ '.'  [0-9]* ( [eE] [-+]? [0-9]+ )? >	-	{ $$ = newFloat(atof(yytext)) }
+	| < [-+]? [0-9]+ '.'? [0-9]* ( [eE] [-+]? [0-9]+ )  >	-	{ $$ = newFloat(atof(yytext)) }
+
+integer	= "0x" < [0-9a-fA-F]+ > -	{ $$ = newInteger(strtol(yytext, 0, 16)) }
+	| "0b" < [0-1]+ > -		{ $$ = newInteger(strtol(yytext, 0,  2)) }
+	| < [0-9]+ > -			{ $$ = newInteger(strtol(yytext, 0, 10)) }
+	| "'" !"'" c:char "'" -		{ $$ = c }
+
+mkStr	=				{ $$ = newString() }
+
+string	= '"' s:mkStr
+	      ( !'"' c:char		{ String_append(s, _integerValue(c)) }
+	      )* '"' -			{ $$ = s }
+
+char    = '\\' e:escaped		{ $$ = e }
+	| < . >				{ $$ = newInteger(yytext[0]) }
+
+escaped	= 'a'				{ $$ = newInteger('\a') }
+	| 'b'				{ $$ = newInteger('\b') }
+	| 'f'				{ $$ = newInteger('\f') }
+	| 'n'				{ $$ = newInteger('\n') }
+	| 'r'				{ $$ = newInteger('\r') }
+	| 't'				{ $$ = newInteger('\t') }
+	| 'v'				{ $$ = newInteger('\v') }
+	| "'"				{ $$ = newInteger('\'') }
+	| '"'				{ $$ = newInteger('\"') }
+	| '\\'				{ $$ = newInteger('\\') }
+	| < OCT OCT? OCT? >		{ $$ = newInteger(strtol(yytext, 0,  8)) }
+	| 'x' < HEX? HEX? >		{ $$ = newInteger(strtol(yytext, 0, 16)) }
+	| 'u' < HEX? HEX? HEX? HEX? >	{ $$ = newInteger(strtol(yytext, 0, 16)) }
+
+OCT	= [0-7]
+HEX	= [0-9a-fA-F]
+
+idopt	= id | { $$ = nil }
+
+id	= !keyword < alpha alnum*  > -	{ $$ = intern(yytext) }
+
+keyword	= TYPEDEF | VOID | CHAR | SHORT | INT | LONG | FLOAT | DOUBLE
+	| STRUCT | UNION | ENUM | STATIC | EXTERN
+	| IF | ELSE | WHILE | FOR | RETURN | CONTINU | BREAK
+
+alpha	= [a-zA-Z_]
+alnum	= [a-zA-Z_0-9]
+
+-	= blank*
+blank	= space | eol | comment
+space	= [ \t]
+eol	= ( '\n' '\r'? | '\r' '\n'? )	{ lineNo += 1 }
+comment = "//" (!eol .)* eol
+	| "/*" (!"*/" (eol | .))* "*/"
+
+INCLUDE	= < "include"  	![_a-zA-Z0-9] > { $$ = newToken(yytext) } -
+EXTERN	= < "extern"   	![_a-zA-Z0-9] > { $$ = newToken(yytext) } -
+STATIC	= < "static"   	![_a-zA-Z0-9] > { $$ = newToken(yytext) } -
+TYPEDEF	= < "typedef"  	![_a-zA-Z0-9] > { $$ = newToken(yytext) } -
+VOID	= < "void"     	![_a-zA-Z0-9] > { $$ = newToken(yytext) } -
+CHAR	= < "char"     	![_a-zA-Z0-9] > { $$ = newToken(yytext) } -
+SHORT	= < "short"    	![_a-zA-Z0-9] > { $$ = newToken(yytext) } -
+INT	= < "int"      	![_a-zA-Z0-9] > { $$ = newToken(yytext) } -
+LONG	= < "long"     	![_a-zA-Z0-9] > { $$ = newToken(yytext) } -
+FLOAT	= < "float"    	![_a-zA-Z0-9] > { $$ = newToken(yytext) } -
+DOUBLE	= < "double"   	![_a-zA-Z0-9] > { $$ = newToken(yytext) } -
+STRUCT	= < "struct"   	![_a-zA-Z0-9] > { $$ = newToken(yytext) } -
+UNION	= < "union"    	![_a-zA-Z0-9] > { $$ = newToken(yytext) } -
+ENUM	= < "enum"     	![_a-zA-Z0-9] > { $$ = newToken(yytext) } -
+# UNION	= < "union"    	![_a-zA-Z0-9] > { $$ = newToken(yytext) } -
+# ENUM	= < "enum"     	![_a-zA-Z0-9] > { $$ = newToken(yytext) } -
+SIZEOF	= < "sizeof"   	![_a-zA-Z0-9] > { $$ = newToken(yytext) } -
+IF	= < "if"	![_a-zA-Z0-9] > { $$ = newToken(yytext) } -
+ELSE	= < "else"     	![_a-zA-Z0-9] > { $$ = newToken(yytext) } -
+WHILE	= < "while"    	![_a-zA-Z0-9] > { $$ = newToken(yytext) } -
+FOR	= < "for"      	![_a-zA-Z0-9] > { $$ = newToken(yytext) } -
+RETURN	= < "return"   	![_a-zA-Z0-9] > { $$ = newToken(yytext) } -
+CONTINU = < "continue" 	![_a-zA-Z0-9] > { $$ = newToken(yytext) } -
+BREAK	= < "break"    	![_a-zA-Z0-9] > { $$ = newToken(yytext) } -
+DOT     = < "."  !"."   > { $$ = newToken(yytext) } -
+ARROW   = < "->"        > { $$ = newToken(yytext) } -
+ETC     = < "..."       > { $$ = newToken(yytext) } -
+HASH    = < "#"         > { $$ = newToken(yytext) } -
+ASSIGN	= < "="  !"="  	> { $$ = newToken(yytext) } -
+PLUS	= < "+"  !"+"	> { $$ = newToken(yytext) } -
+PPLUS	= < "++"	> { $$ = newToken(yytext) } -
+MINUS	= < "-"  !"-"	> { $$ = newToken(yytext) } -
+MMINUS	= < "--"	> { $$ = newToken(yytext) } -
+STAR	= < "*"		> { $$ = newToken(yytext) } -
+BAR	= < "|"  !"|"	> { $$ = newToken(yytext) } -
+BARBAR	= < "||"	> { $$ = newToken(yytext) } -
+AND	= < "&"  !"&"	> { $$ = newToken(yytext) } -
+ANDAND	= < "&&"	> { $$ = newToken(yytext) } -
+HAT	= < "^"		> { $$ = newToken(yytext) } -
+EQUAL	= < "=="	> { $$ = newToken(yytext) } -
+NEQUAL	= "!="		> { $$ = newToken(yytext) } -
+LESS	= < "<"  ![=<]	> { $$ = newToken(yytext) } -
+LESSEQ	= < "<="	> { $$ = newToken(yytext) } -
+GRTREQ	= < ">="	> { $$ = newToken(yytext) } -
+GRTR	= < ">"  ![=>]	> { $$ = newToken(yytext) } -
+LSHIFT	= < "<<"	> { $$ = newToken(yytext) } -
+RSHIFT	= < ">>"	> { $$ = newToken(yytext) } -
+SLASH	= < "/"		> { $$ = newToken(yytext) } -
+PCENT	= < "%"		> { $$ = newToken(yytext) } -
+PLING	= < "!"  !"="	> { $$ = newToken(yytext) } -
+TILDE	= < "~"		> { $$ = newToken(yytext) } -
+LPAREN	= < "("		> { $$ = newToken(yytext) } -
+RPAREN	= < ")"		> { $$ = newToken(yytext) } -
+LBRAK	= < "["		> { $$ = newToken(yytext) } -
+RBRAK	= < "]"		> { $$ = newToken(yytext) } -
+LBRACE	= < "{"		> { $$ = newToken(yytext) } -
+RBRACE	= < "}"		> { $$ = newToken(yytext) } -
+COMMA   = < ","		> { $$ = newToken(yytext) } -
+SEMI    = < ";"		> { $$ = newToken(yytext) } -
+
+%%
+;
+
+#include <setjmp.h>
+
+enum { NLR_INIT = 0, NLR_RETURN, NLR_CONTINUE, NLR_BREAK };
+
+Object  *nlrValue = 0;
+
+jmp_buf *nlrStack = 0;
+int      nlrCount = 0;
+int      nlrMax   = 0;
+
+void _nlrPush(void)
+{
+    if (nlrCount >= nlrMax)
+	nlrStack = realloc(nlrStack, sizeof(*nlrStack) * (nlrMax += 8));
+}
+
+#define nlrPush()	setjmp((_nlrPush(), nlrStack[nlrCount++]))
+
+oop nlrPop(void)
+{
+    assert(nlrCount > 0);
+    --nlrCount;
+    return nlrValue;
+}
+
+#define nlrReturn(TYPE, VAL)	((nlrValue = (VAL), longjmp(nlrStack[nlrCount-1], TYPE)))
+
+#define IBINOP(L, OP, R)	newInteger(integerValue(L) OP integerValue(R))
+#define IRELOP(L, OP, R)	(integerValue(L) OP integerValue(R) ? true : false)
+
+#define FBINOP(L, OP, R)	newFloat(floatValue(L) OP floatValue(R))
+#define FRELOP(L, OP, R)	(floatValue(L) OP floatValue(R) ? true : false)
+
+oop declareVariable(oop name, oop type, oop value, int isdead);
+
+oop apply(oop function, oop arguments, oop env)
+{
+    if (opt_v > 2) { printf("APPLY ");  println(function); }
+    switch (getType(function)) {
+	default: {
+	    fatal("type %s is not callable", getTypeName(function));
+	}
+	case Primitive: {
+	    oop argv = newList();
+	    List_do(arguments, arg) List_append(argv, eval(arg));
+	    return get(function, Primitive,function)
+		( get(argv, List,size),
+		  get(argv, List,elements),
+		  env );
+	}
+	case Function: {
+	    oop parameters = get(function, Function,parameters);
+	    oop body       = get(function, Function,body);
+	    int variadic   = get(function, Function,variadic);
+	    int parc       = get(parameters, List,size);
+	    int argc       = get(arguments,  List,size);
+	    if (argc < parc)
+		fatal("too few arguments calling %s", toString(function));
+	    if (argc > parc && !variadic)
+		fatal("too many arguments calling %s", toString(function));
+	    oop *parv = get(parameters, List,elements);
+	    oop *argv = get(arguments,  List,elements);
+	    Scope_begin();
+	    int  argn = 0;
+	    while (argn < parc) {
+		oop var = parv[argn];
+		oop arg = argv[argn];
+		declareVariable(get(var, Variable,name), get(var, Variable,type), eval(arg), get(var, Variable,isdead));
+		++argn;
+	    }
+	    if (argn < argc) { // put varargs array in local variable called "..."
+		oop etc = newList();
+		while (argn < argc) List_append(etc, eval(argv[argn++]));
+		declareVariable(s_etc, t_etc, etc,0);
+	    }
+	    switch (nlrPush()) { // longjmp occurred
+		case NLR_INIT:     break;
+		case NLR_RETURN:   Scope_end();  return nlrPop();
+		case NLR_CONTINUE: fatal("continue outside loop");
+		case NLR_BREAK:	   fatal("break outside loop");
+	    }
+	    oop result = eval(body);
+	    Scope_end();
+	    nlrPop();
+	    return result;
+	}
+    }
+}
+
+oop declare(oop name, oop value)
+{
+    oop scope = List_last(scopes);
+    int index = Scope_find(scope, name); // searches active scope only
+    if (index >= 0) {
+	oop old     = Scope_lookup(name);		assert(old);
+	switch (getType(old)) {
+	    case Variable: {
+		oop oldtype = get(old, Variable,type);
+		if (is(Tfunction, oldtype)) {
+		    switch (getType(value)) {
+			case Variable: {
+			    oop valtype = get(value, Variable,type);
+			    if (oldtype == valtype) return value; // function declaration
+			    break;
+			}
+			case Function: { // replace forard declaration with actual function
+			    Scope_redeclare(name, value);
+			    return value;
+			}
+			default:
+			    break;
+		    }
+		}
+		break;
+	    }
+	    case Function: {
+		if (is(Variable, value)) {
+		    oop oldtype = get(old, Function,type);
+		    oop valtype = get(old, Variable,type);
+		    if (oldtype == valtype) return value; // compatible redeclaration
+		}
+		break;
+	    }
+	    default:
+		break;
+	}
+	fatal("name '%s' redefined\n", get(name, Symbol,name));
+    }
+    List_append(get(scope, Scope,names ), name );
+    List_append(get(scope, Scope,values), value);
+    return value;
+}
+
+oop declareVariable(oop name, oop type, oop value, int isdead)
+{
+    assert(is(Symbol, name));
+    return declare(name, newVariable(name, type, value, isdead));
+}
+
+oop declareType(oop name, oop type)
+{
+    return declare(name, newTypeName(name, type));
+}
+
+oop declarePrimitive(oop name, oop type, oop parameters, prim_t function)
+{
+    return declare(name, newPrimitive(name, type, parameters, function));
+}
+
+oop cvt_(oop obj)	{ return obj; }
+oop cvtI(oop obj)	{ return newInteger((int)_integerValue(obj)); }
+oop cvtP(oop obj)	{ return newPointer(t_pvoid, obj, 0); }
+
+cvt_t converter(int tfrom, int tto)
+{
+    static cvt_t converters[9][9] = {
+	/* void char short   int  long float double pointer array <- FROM TO -v */
+	{     0,   0,    0,    0,    0,    0,     0,      0,    0 },	// void
+	{     0,   0,    0,    0,    0,    0,     0,      0,    0 },	// char
+	{     0,   0,    0,    0,    0,    0,     0,      0,    0 },	// short
+	{     0,   0,    0, cvtI, cvtI,    0,     0,      0,    0 },	// int
+	{     0,   0,    0, cvtI,    0,    0,     0,   cvt_,    0 },	// long
+	{     0,   0,    0,    0,    0, cvt_,     0,      0,    0 },	// float
+	{     0,   0,    0,    0,    0,    0,     0,      0,    0 },	// double
+	{     0,   0,    0,    0, cvt_,    0,     0,   cvt_,    0 },	// pointer
+	{     0,   0,    0,    0,    0,    0,     0,      0,    0 },	// array
+    };
+    if (tfrom < Tvoid || tfrom > Tarray) return 0;
+    if (tto   < Tvoid || tto   > Tarray) return 0;
+    return converters[tto - Tvoid][tfrom - Tvoid];
+}
+
+int isType(oop obj)
+{
+    type_t type = getType(obj);
+    return Tvoid <= type && type <= Tfunction;
+}
+
+int typeSize(oop type)
+{
+    switch (getType(type)) {
+	case Tvoid: 	return 1;
+	case Tchar: 	return 1;
+	case Tshort: 	return 2;
+	case Tint: 	return 4;
+	case Tlong: 	return 8;
+	case Tfloat: 	return 4;
+	case Tdouble: 	return 8;
+	case Tpointer:	return 8; // fixme: make this a parameter
+	case Tstruct: {
+	    int size = get(type, Tstruct,size);
+	    if (size < 0) {
+		oop tag = get(type, Tstruct,tag);
+		fatal("cannot determine size of incomplete struct type '%s'",
+		      isNil(tag) ? "<anonymous>" : symbolName(tag));
+	    }
+	    return size;
+	}
+	case Tarray: {
+	    oop target = get(type, Tarray,target);
+	    if (isNil(target)) fatal("cannot determine size of incomplete array type (unknown element type)");
+	    oop size   = get(type, Tarray,size);
+	    if (isNil(size))   fatal("cannot determine size of incomplete array type (unknown size)");
+	    return typeSize(target) * _integerValue(size);
+	}
+	case Tfunction:	assert(!"unimplemented");
+	default:	assert(!"this cannot happen");
+    }
+    return 0;
+}
+
+oop incr(oop val, int amount)
+{
+  switch (getType(val)) {
+    case Integer:	return newInteger(integerValue(val) + amount);
+    case Float:	return newFloat  (  floatValue(val) + amount);
+    case Pointer: {
+      oop t = get(val, Pointer,type);
+      oop b = get(val, Pointer,base);
+      int o = get(val, Pointer,offset) + amount;
+      oop p = newPointer(t, b, o);
+      switch (getType(b)) {
+	case Variable:
+	  if (o < -1 || o > 1) fatal("pointer modified beyond base object: %s", toString(p));
+	  break;
+	case Memory: {
+	  int limit = get(b, Memory,size) / typeSize(get(t, Tpointer,target));
+	  if (o < -1 || o > limit) fatal("pointer modified beyond base object: %s", toString(p));
+	  break;
+	}
+	default:
+	  println(b);
+	  assert(!"unimplemented");
+	  break;
+      }
+      return p;
+    }
+    default:
+      fatal("cannot increment: %s", toString(val));
+  }
+  return nil;
+}
+
+int toBoolean(oop arg)
+{
+    switch (getType(arg)) {
+	case Integer:	return !!_integerValue(arg);
+	case Float:	return !! integerValue(arg);
+	case String:	return 1;
+	case Reference:	return 1;
+	case Pointer: {
+	    oop base = get(arg, Pointer,base);
+	    switch (getType(base)) {
+		case Integer:	return !!_integerValue(base);
+		case Memory:	return !!get(base, Memory,base);
+		default:	fatal("cannot convert pointer base %s to boolean", getTypeName(base));
+	    }
+	}
+	default:	fatal("cannot convert %s to boolean", getTypeName(arg));
+    }
+    return 0;
+}
+
+#define isTrue(O)	( toBoolean(O))
+#define isFalse(O)	(!toBoolean(O))
+
+int isNull(oop p)
+{
+    switch (getType(p)) {
+	case Integer:	return 0 == _integerValue(p);
+	case Pointer: {
+	    if (t_pvoid != get(p, Pointer,type)) return 0;
+	    oop base = get(p, Pointer,base);
+	    switch (getType(base)) {
+		case Integer:	return 0 == _integerValue(base);
+		case Memory:	return 0 == get(base, Memory,base);
+		default:	break;
+	    }
+	    break;
+	}
+	default: break;
+    }
+    return 0;
+}
+
+oop pointerType(oop arg)
+{
+    switch (getType(arg)) {
+	case Pointer:	return get(arg, Pointer,type);
+	case Array:	return get(arg, Array,type);
+	default:	break;
+    }
+    return nil;
+}
+
+oop elementType(oop arg)
+{
+    switch (getType(arg)) {
+	case Pointer:	return get(get(arg, Pointer,type), Tpointer,target);
+	case Array:	return get(get(arg, Array,type),   Tarray,target);
+	default:	break;
+    }
+    return nil;
+}
+
+oop pointerMemory(oop arg)
+{
+    oop base = nil;
+    switch (getType(arg)) {
+	case Pointer:	base = get(arg, Pointer,base);	break;
+	case Array:	base = get(arg, Array,base);	break;
+	default:	break;
+    }
+    if (!is(Memory, base)) return nil;
+    return base;
+}
+
+char *pointerString(oop ptr)
+{
+    oop mem = pointerMemory(ptr);
+    if (nil == mem) fatal("cannot get string from pointer: ", toString(ptr));
+    char *addr = get(mem, Memory,base);
+    int   size = get(mem, Memory,size);
+    char *term = memchr(addr, '\0', size);
+    if (!term) fatal("unterminated string: %s", toString(ptr));
+    return addr;
+}
+
+oop prim_printf(int argc, oop *argv, oop env) // array
+{
+    if (argc < 1) fatal("printf: no format string");
+    oop format = argv[0];
+    if (!is(String, format)) fatal("printf: format is not a string");
+    char *fmt  = get(format, String,elements);
+    int   size = get(format, String,size);
+    int   n    = 0;
+    int   argn = 1;
+    for (int i = 0;  i < size;) {
+	if (fmt[i] != '%') {
+	  echo:
+	    putchar(fmt[i++]);
+	    ++n;
+	    continue;
+	}
+	int j = i, c = 0;
+	int mod_z = 0, mod_l = 0;
+	for (;;) {
+	    c = fmt[++j];
+	    if (!c) goto echo;
+	    if (!strchr(" 0123456789#-+'.zl", c)) break;
+	    if ('z' == c) ++mod_z;
+	    if ('l' == c) ++mod_l;
+	}
+	if (!strchr("cdiouxXceEfFgGsp%", c))
+	    fatal("printf: illegal conversion specifier '%c'", c);
+	char buf[32];
+	if (j - i >= sizeof(buf) - 1) fatal("printf: format too complex");
+	int k = 0;
+	while (i <= j) buf[k++] = fmt[i++];
+	assert(k < sizeof(buf));
+	buf[k] = 0;
+	if ('%' == c) {
+	    n += printf(buf, 0); // junk argument defeats gcc's -Wformat-security warning
+	    continue;
+	}
+	if (argn >= argc) fatal("printf: too few arguments for format string");
+	oop arg = argv[argn++];
+	switch (c) {
+	    case 'c': case 'd': case 'i': case 'o': case 'u': case 'x': case 'X': {
+		if (!is(Integer, arg)) fatal("printf: argument of '%%%c' is not 'int'", c);
+		long x = _integerValue(arg);
+		if      (mod_z     ) n += printf(buf, (size_t)x);
+		else if (mod_l == 1) n += printf(buf, (long)x);
+		else if (mod_l == 2) n += printf(buf, (long long)x);
+		else                 n += printf(buf, (int)x);
+		continue;
+	    }
+	    case 'e': case 'E': case 'f': case 'F': case 'g': case 'G': {
+		if (!is(Float, arg)) fatal("printf: argument of '%%%c' is not 'float'", c);
+		double x = _floatValue(arg);
+		n += printf(buf, x);
+		continue;
+	    }
+	    case 's': {
+		switch (getType(arg)) {
+		    case String: {
+			n += printf(buf, String_cString(arg));
+			continue;
+		    }
+		    case Pointer:
+		    case Array: {
+			oop type = elementType(arg);
+			if (t_char == type) {
+			    char *addr = pointerString(arg);
+			    n += printf(buf, addr);
+			    continue;
+			}
+			break;
+		    }
+		    default:
+			break;
+		}
+		fatal("printf: %%s conversion of non-string: %s", toString(arg));
+		break;
+	    }
+	    case 'p': {
+		switch (getType(arg)) {
+		    case Pointer:
+		    case Array: {
+			buf[k-1] = 's';
+			n += printf(buf, toString(arg));
+			break;
+		    }
+		    default:
+			fatal("printf: %%p conversion of non-pointer: %s", getTypeName(arg));
+		}
+		continue;
+	    }
+	}
+    }
+    if (argn < argc) fatal("printf: too many arguments for format string");
+    return newInteger(n);
+}
+
+oop prim_assert(int argc, oop *argv, oop env) // array
+{
+    if (argc != 1) fatal("assert: wrong number of arguments");
+    int value = toBoolean(argv[0]);
+    if (!value) fatal("assertion failed\n");
+    return nil;
+}
+
+oop heap = 0;
+
+oop prim_malloc(int argc, oop *argv, oop env) // array
+{
+    if (argc != 1) fatal("malloc: wrong number of arguments");
+    oop arg = argv[0];
+    if (is(Integer,arg)) {
+	size_t size = _integerValue(arg);
+	if (size >= 0) {
+	    if (size > 10*1024*1024)
+		fatal("cowardly refusing to allocate memory of size %zd", size);
+	    void *ptr = MALLOC(size);
+	    if (!ptr) fatal("malloc(%zd) failed", size);
+	    oop mem = newMemory(ptr, size, 1);
+	    List_append(heap, mem);
+	    return newPointer(t_pvoid, mem, 0);
+	}
+    }
+    fatal("malloc: invalid argument: %s", toString(arg));
+    return 0;
+}
+
+oop prim_free(int argc, oop *argv, oop env) // array
+{
+  if (argc != 1) fatal("free: wrong number of arguments");
+  oop arg = argv[0];
+  if (!is(Pointer,arg)) fatal("free: argument is not a pointer");
+  oop base = get(arg, Pointer,base);
+  get(arg, Pointer, isfree) = -1;
+  switch (getType(base)) {
+    case Integer:	fatal("attempt to free arbitrary pointer %s", toString(arg));
+    case Variable:	fatal("attempt to free pointer to variable %s", toString(arg));
+    case Memory: {
+      if (!get(base, Memory,heap)) fatal("freed memory was not allocated in the heap: %s", toString(base));
+      if ( get(base, Memory,free)) fatal("memory freed more than once: %s", toString(base));
+      FREE(get(base, Memory,base));
+      set(base, Memory,free, get(base, Memory,free) + 1);
+      break;
+    }
+    default:	assert(!"this cannot happen");
+  }
+  return nil;
+}
+
+oop prim_exit(int argc, oop *argv, oop env) // array
+{
+    if (argc != 1) fatal("exit: wrong number of arguments");
+    oop arg = argv[0];
+    if (!is(Integer,arg)) fatal("exit: argument is not an integer");
+    exit(_integerValue(arg));
+    return nil;
+}
+
+oop prim_abort(int argc, oop *argv, oop env) // array
+{
+    if (argc != 0) fatal("abort: wrong number of arguments");
+    abort();
+    return nil;
+}
+
+oop prim_atoi(int argc, oop *argv, oop env) // array
+{
+    if (argc != 1) fatal("atoi: wrong number of arguments");
+    oop arg = argv[0];
+    if (!is(Pointer, arg) || t_pchar != get(arg, Pointer,type))
+	fatal("atoi: illegal argument: %s", toString(arg));
+    return newInteger(atoi(pointerString(arg)));
+}
+
+oop prim_sqrtf(int argc, oop *argv, oop env) // array
+{
+    if (argc != 1) fatal("sqrtf: wrong number of arguments");
+    oop arg = argv[0];
+    if (!is(Float, arg)) fatal("sqrtf: argument is not a float");
+    return newFloat(sqrtf(_floatValue(arg)));
+}
+
+void declareTag(oop type)
+{
+    oop members = get(type, Tstruct,members);
+    int size    = get(type, Tstruct,size);
+    if (size < 0 && !isNil(members)) { // defining
+	int offset = 0;
+	oop vars = newList();
+	List_do(members, vardecls) {
+	    oop vtype = get(vardecls, VarDecls,type);
+	    oop decls = get(vardecls, VarDecls,variables);
+	    List_do(decls, decl) {
+		oop mtype = makeType(vtype, decl);
+		oop mname = makeName(decl);
+		int msize = typeSize(mtype);
+		int fragment = offset % msize;
+		if (fragment) offset += msize - fragment;
+		oop var = newVariable(mname, mtype, newInteger(offset), 0);
+		List_append(vars, var);
+		offset += msize;
+	    }
+	}
+	set(type, Tstruct,members, vars);
+	set(type, Tstruct,size,    offset);
+    }
+}
+
+oop typeCheck(oop exp, oop fntype)
+{
+    switch (getType(exp)) {
+	case Integer:	return t_int;
+	case Float:	return t_float;
+	case Pointer: 	break;
+	case String:	return t_pchar;
+	case Symbol: {
+	    oop value = Scope_lookup(exp);
+	    if (!value) 	fatal("undefined variable '%s'", symbolName(exp));
+	    if (nil == value) 	fatal("uninitialised variable '%s'", symbolName(exp));
+	    switch (getType(value)) {
+		case Primitive:	return get(value, Primitive,type);
+		case Function:	return get(value, Function,type);
+		case Variable:	return get(value, Variable,type);
+
+		default:
+		    fatal("cannot typecheck value of type %s", getTypeName(value));
+	    }
+	    return nil;
+	}
+	case Addressof: {
+	    return newTpointer(typeCheck(get(exp, Addressof,rhs), fntype));
+	}
+	case Dereference: {
+	    oop rhs = get(exp, Dereference,rhs);
+	    oop rht = typeCheck(rhs, fntype);
+	    if (!is(Tpointer, rht))
+		fatal("%scannot dereference '%s'",
+		      tokloc(get(exp, Dereference,token)), toString(rhs));
+		return get(rht, Tpointer,target);
+	}
+	case Cast: {
+	    oop lhs = makeBaseType(get(exp, Cast,type));
+	    oop rhs = get(exp, Cast,rhs);
+	    set(exp, Cast,type, lhs);
+	    type_t lht = getType(lhs);
+	    if (Tpointer == lht && is(Integer,rhs) && !_integerValue(rhs)) {
+		set(exp, Cast,converter, cvtP);
+		return lhs;
+	    }
+	    rhs = typeCheck(get(exp, Cast,rhs), fntype);
+	    cvt_t cvt = converter(getType(rhs), lht);
+	    if (!cvt) fatal("cannot convert '%s' to '%s'", toString(rhs), toString(lhs));
+	    set(exp, Cast,converter, cvt);
+	    return lhs;
+	}
+	case Sizeof: {
+	    oop rhs  = get(exp, Sizeof,rhs);
+	    if (!isType(rhs)) rhs = typeCheck(rhs, fntype);	assert(isType(rhs));
+	    set(exp, Sizeof,size, newInteger(typeSize(rhs)));
+	    return t_long;
+	}
+	case Unary: {
+	    oop rhs = get(exp, Unary,rhs);
+	    oop rht = typeCheck(rhs, fntype);
+	    switch (get(exp, Unary,operator)) {
+		case NEG:
+		    switch (getType(rht)) {
+			case Tchar: case Tshort: case Tint:	return t_int;
+			case Tfloat: case Tdouble:		return rht;
+			default: fatal("cannot negate: %s", toString(rhs));
+		    }
+		case NOT:	return t_int;
+		case COM:
+		    switch (getType(rht)) {
+			case Tint: case Tlong: return rht;
+			default: fatal("cannot complement: %s", toString(rhs));
+			return t_int;
+		    }
+		case PREINC:	return rht;
+		case PREDEC:	return rht;
+		case POSTINC:	return rht;
+		case POSTDEC:	return rht;
+	    }
+	    return nil;
+	}
+	case Binary: {
+	    oop lhs = typeCheck(get(exp, Binary,lhs), fntype);
+	    oop rhs = typeCheck(get(exp, Binary,rhs), fntype);
+	    switch (get(exp, Binary,operator)) {
+		case MUL: {
+		    if (lhs == rhs) {
+			if (t_int    == lhs) return lhs;
+			if (t_long   == lhs) return lhs;
+			if (t_float  == lhs) return lhs;
+			if (t_double == lhs) return lhs;
+		    }
+		    fatal("cannot multiply '%s' and '%s'", toString(lhs), toString(rhs));
+		    break;
+		}
+		case DIV: {
+		    if (lhs == rhs) {
+			if (t_int    == lhs) return lhs;
+			if (t_long   == lhs) return lhs;
+			if (t_float  == lhs) return lhs;
+			if (t_double == lhs) return lhs;
+		    }
+		    fatal("cannot divide '%s' and '%s'", toString(lhs), toString(rhs));
+		    break;
+		}
+		case MOD: 	assert(!"unimplemented"); 	break;
+		case ADD: {
+		    if (lhs == rhs) {
+			if (t_int   == lhs) return lhs;
+			if (t_float == lhs) return lhs;
+		    }
+		    if (is(Tpointer, lhs) && t_int == rhs) {
+			return lhs;
+		    }
+		    if (is(Tarray, lhs) && t_int == rhs) {
+			return newTpointer(get(lhs, Tarray,target));
+		    }
+		    fatal("%scannot add '%s' and '%s'", tokloc(get(exp, Binary,token)),
+			  toString(lhs), toString(rhs));
+		    break;
+		}
+		case SUB: {
+		    if (lhs == rhs) {
+			if (t_int   == lhs) return lhs;
+			if (t_float == lhs) return lhs;
+		    }
+		    if (is(Tpointer, lhs) && t_int == rhs) {
+			return lhs;
+		    }
+		    if (is(Tpointer, lhs) && is(Tpointer, rhs)) {
+			return t_long;
+		    }
+		    fatal("%scannot subtract '%s' and '%s'",
+			  tokloc(get(exp, Binary,token)),
+			  toString(lhs), toString(rhs));
+		    break;
+		}
+		case SHL: 	return t_int;//assert(!"unimplemented"); 	break;
+		case SHR: 	return t_int;//assert(!"unimplemented"); 	break;
+		case LT:	return t_int;
+		case LE: 	assert(!"unimplemented"); 	break;
+		case GE: 	assert(!"unimplemented"); 	break;
+		case GT: 	return t_int;
+		case EQ: 	return t_int;
+		case NE: 	return t_int;
+		case BAND: 	assert(!"unimplemented"); 	break;
+		case BXOR: 	assert(!"unimplemented"); 	break;
+		case BOR: 	assert(!"unimplemented"); 	break;
+		case LAND: 	assert(!"unimplemented"); 	break;
+		case LOR: 	assert(!"unimplemented"); 	break;
+	    }
+	    return nil;
+	}
+	case Index: {
+	    oop lhs = typeCheck(get(exp, Index,lhs), fntype);
+	    oop rhs = typeCheck(get(exp, Index,rhs), fntype);
+	    if (t_int != rhs)
+		fatal("%sarray index is not 'int': %s",
+		      tokloc(get(exp, Index,token)), toString(get(exp, Index,rhs)));
+	    switch (getType(lhs)) {
+		case Tpointer:	return get(lhs, Tpointer,target);
+		case Tarray:	return get(lhs, Tarray,target);
+		default: fatal("'%s' is not indexable: %s", toString(lhs), toString(exp));
+	    }
+	    break;
+	}
+	case Member: {
+	    oop lhs   	= get(exp, Member,lhs);
+	    oop name  	= get(exp, Member,name);
+	    oop ltype 	= typeCheck(lhs, fntype);
+	    oop members = nil;
+	    switch (getType(ltype)) {
+		case Tstruct: members = get(ltype, Tstruct,members);  break;
+		default:
+		    fatal("member reference to non-struct/union type '%s': %s",
+			  toString(ltype), toString(lhs));
+	    }
+	    if (isNil(members))
+		fatal("member reference to incomplete type '': %s",
+		      toString(ltype), toString(lhs));
+	    List_do(members, member)
+		if (name == get(member, Variable,name))
+		    return get(member, Variable,type);
+	    fatal("no member named '%s' in '%s'", symbolName(name), toString(ltype));
+	    break;
+	}
+	case Assign: {
+	    oop lhs = typeCheck(get(exp, Assign,lhs), fntype);
+	    oop rhs = typeCheck(get(exp, Assign,rhs), fntype);
+	    if (lhs == rhs) return lhs;
+	    int lht = getType(lhs), rht = getType(rhs);
+	    if (Tpointer == lht) {
+		oop target = nil;
+		switch (rht) {
+		    case Tpointer:  target = get(rhs, Tpointer,target);  break;
+		    case Tarray:    target = get(rhs, Tarray,  target);  break;
+		    default:	    goto error;
+		}
+		if (get(lhs, Tpointer,target) == target) return lhs;
+		goto error;
+	    }
+	  error:
+	    fatal("%sincompatible types assigning '%s' to '%s'", tokloc(get(exp, Assign,token)), toString(rhs), toString(lhs));
+	    return lhs;
+	}
+	case If: {
+	    if (t_int != typeCheck(get(exp, If,condition), fntype)) fatal("if condition is not 'int'");
+	    typeCheck(get(exp, If,consequent), fntype);
+	    if (nil != get(exp, If,alternate))
+		typeCheck(get(exp, If,alternate), fntype);
+	    return nil;
+	}
+	case While: {
+	    oop cond = get(exp, While,condition);
+	    oop body = get(exp, While,expression);
+	    cond = typeCheck(cond, fntype);
+	    if (t_int != cond) fatal("while condition is not 'int'");
+	    typeCheck(body, fntype);
+	    return nil;
+	}
+	case For: {
+	    oop init = get(exp, For,initialiser);
+	    oop cond = get(exp, For,condition);
+	    oop step = get(exp, For,update);
+	    oop body = get(exp, For,body);
+	    Scope_begin();
+	    typeCheck(init, fntype);
+	    cond = typeCheck(cond, fntype);
+	    if (t_int != cond && !is(Tpointer, cond)) fatal("for condition is not 'int' or '*'");
+	    typeCheck(step, fntype);
+	    typeCheck(body, fntype);
+	    Scope_end();
+	    return nil;
+	}
+	case Primitive: {
+	    oop type       = get(exp, Primitive,type      );
+	    oop name       = get(exp, Primitive,name      );
+	    oop parameters = get(exp, Primitive,parameters);
+	    oop ptypes     = newList();
+	    oop result     = makeType(type, name);
+	    name = makeName(name);
+	    set(exp, Primitive,name, name);
+	    set(exp, Primitive,type, result);
+	    if (List_size(parameters) && t_etc == List_last(parameters)) {
+		List_popLast(parameters);
+		set(exp, Primitive,variadic, 1);
+	    }
+	    List_do(parameters, var) {
+		oop ptype = makeBaseType(get(var, Variable,type));
+		if (t_void == ptype && (do_index || do_size > 1))
+		    fatal("illegal void parameter");
+		oop pname = get(var, Variable,name);
+		ptype = makeType(ptype, pname);
+		pname = makeName(pname);
+		set(var, Variable,name, pname);
+		set(var, Variable,type, ptype);
+		List_append(ptypes, ptype);
+	    }
+	    if (1 == List_size(ptypes) && List_last(ptypes) == t_void) {
+		List_popLast(ptypes);
+		List_popLast(parameters);
+	    }
+	    assert(isNil(fntype));
+	    if (get(exp, Primitive,variadic)) List_append(ptypes, t_etc);
+            fntype = newTfunction(result, ptypes);
+	    set(exp, Primitive,type, fntype);
+#         define _(X) if (s_##X == name) set(exp, Primitive,function, prim_##X);
+	    _do_primitives(_);
+#         undef _
+	    if (!get(exp, Primitive,function))
+		fatal("external symbol '%s' is undefined", toString(name));
+	    declare(name, exp);
+	    return nil;
+	}
+	case Function: {
+	    oop type       = makeBaseType(get(exp, Function,type));
+	    oop name       = get(exp, Function,name      );
+	    oop parameters = get(exp, Function,parameters);
+	    oop body       = get(exp, Function,body      );
+	    oop ptypes     = newList();
+	    oop result     = makeType(type, name);
+	    name = makeName(name);
+	    set(exp, Function,name, name);
+	    set(exp, Function,type, result);
+	    if (List_size(parameters) && t_etc == List_last(parameters)) {
+		List_popLast(parameters);
+		set(exp, Function,variadic, 1);
+	    }
+	    List_do(parameters, var) {
+		oop ptype = makeBaseType(get(var, Variable,type));
+		if (t_void == ptype && (do_index || do_size > 1))
+		    fatal("illegal void parameter");
+		oop pname = get(var, Variable,name);
+		ptype = makeType(ptype, pname);
+		pname = makeName(pname);
+		set(var, Variable,name, pname);
+		set(var, Variable,type, ptype);
+		List_append(ptypes, ptype);
+	    }
+	    if (1 == List_size(ptypes) && List_last(ptypes) == t_void) {
+		List_popLast(ptypes);
+		List_popLast(parameters);
+	    }
+	    assert(isNil(fntype));
+	    if (get(exp, Function,variadic)) List_append(ptypes, t_etc);
+            fntype = newTfunction(result, ptypes);
+	    set(exp, Function,type, fntype);
+	    declare(name, exp);	// add function to global scope so recursive calls will work
+	    Scope_begin();	// parameters
+	    List_do(parameters, param) declare(get(param, Variable,name), param);
+	    typeCheck(body, fntype); // block
+	    Scope_end();
+	    return nil;
+	}
+	case Block: {
+	    Scope_begin();
+	    oop statements = get(exp, Block,statements);
+	    List_do(statements, statement) typeCheck(statement, fntype);
+	    Scope_end();
+	    return nil;
+	}
+	case Call: {
+	    oop function  = get(exp, Call,function );
+	    oop arguments = get(exp, Call,arguments);
+	    oop tfunc     = typeCheck(function, fntype);
+	    if (!is(Tfunction, tfunc))
+		fatal("%scannot call %s", tokloc(get(exp, Call,token)), toString(tfunc));
+	    oop  params = get(tfunc, Tfunction,parameters);
+	    int  argc   = get(arguments, List,size);
+	    oop *argv   = get(arguments, List,elements);
+	    int  parc   = get(params, List,size);
+	    oop *parv   = get(params, List,elements);
+	    int  vararg = parc && (t_etc == parv[parc - 1]);
+	    if ((!vararg && (argc != parc)) || (vararg && (argc < parc - 1)))
+		fatal("%swrong number (%d) of arguments, expected %d",
+		      tokloc(get(exp, Call,token)), argc, parc);
+	    int  argn = 0;
+	    while (argn < argc) {
+		oop part = parv[argn];
+		if (part == t_etc) break;
+		oop arg  = argv[argn++];
+		oop argt = typeCheck(arg, fntype);
+		if (argt != part) {
+		    if (is(Tpointer, argt) && t_pvoid == part) continue;
+		    if (is(Tpointer, part) && t_pvoid == argt) continue;
+		    fatal("cannot pass argument of type '%s' to parameter of type '%s': %s ",
+			  toString(argt), toString(part), toString(exp));
+		}
+	    }
+	    while (argn < argc) typeCheck(argv[argn++], fntype);
+	    return get(tfunc, Tfunction,result);
+	}
+	case Return: {
+	    assert(nil != fntype);
+	    oop result = get(fntype, Tfunction,result);
+	    oop value  = get(exp, Return,value);
+	    oop vtype  = isNil(value) ? t_void : typeCheck(value, fntype);
+	    if (vtype != result)
+		fatal("incompatible return of %s from function returning %s",
+		      toString(vtype), toString(result));
+	    return result;
+	}
+	case VarDecls: {
+	    oop base  = makeBaseType(get(exp, VarDecls,type));
+	    printf("basetype:%d\n",getType(base));
+		if (is(Tstruct, base)) declareTag(base);
+	    oop decls = get(exp, VarDecls,variables);
+		println(decls);
+	    oop vars  = newList();
+	    List_do(decls, decl) {
+		oop init   = nil;
+		oop assign = nil;
+		if (is(Assign, decl)) {
+		    assign = get(decl, Assign,token);
+		    init   = get(decl, Assign,rhs);
+		    decl   = get(decl, Assign,lhs);
+		}
+		oop varname = makeName(decl);
+		oop vartype = makeType(base, decl);
+		if (is(Tfunction, vartype)) {
+		    oop ptypes = get(vartype, Tfunction,parameters);
+		    if (1 == List_size(ptypes) && t_void == List_last(ptypes)) {
+			List_popLast(ptypes);
+			// make unique
+			vartype = newTfunction(get(vartype, Tfunction,result), ptypes);
+		    }
+		}
+		oop old = Scope_local(varname);
+		if (old) { // declared
+		    oop oldtype = nil;
+		    switch (getType(old)) {
+			case Variable: {
+			    oldtype = get(old, Variable,type);
+			    if (oldtype == vartype) { // identical declarations
+				oop oldval = get(old, Variable,value);
+				if (isNil(fntype)) // global declarations
+				    if (isNil(init) || isNil(oldval)) // at most one initialiser
+					continue; // redeclaration is permitted
+				fatal("multiple definiton of variable '%s'", toString(varname));
+			    }
+			    break;
+			}
+			case Function:	oldtype = get(old, Function,type);	break;
+			case Primitive:	oldtype = get(old, Primitive,type);	break;
+			default:
+			    fatal("cannot find type of declaration: %s", toString(old));
+		    }
+		    if (vartype == oldtype) continue;
+		    fatal("identifier '%s' redefined as different type: %s -> %s",
+			  toString(varname),
+			  declareString(oldtype, varname),
+			  declareString(vartype, varname));
+		}
+		if (!isNil(varname)) {
+		    // do this now so that an initialiser can refer to the new variable
+		    oop var = declareVariable(varname, vartype, init, 0);
+		    List_append(vars, var);
+		    if (!isNil(init)) {
+			switch (getType(vartype)) {
+			    case Tarray: {
+				oop etype = get(vartype, Tarray,target);
+				oop asize = get(vartype, Tarray,size);
+				int isize = 0;
+				if (t_char == etype && is(String, init)) {
+				    isize = get(init, String,size);
+				    if (isNil(asize)) ++isize; // nul terminator
+				}
+				else if (is(List, init)) {
+				    isize = List_size(init);
+				}
+				if (isNil(asize)) {
+				    asize   = newInteger(isize);
+				    vartype = newTarray(etype, asize);
+				    set(var, Variable,type, vartype); // implicitly sized array
+				}
+				else {
+				    int na = _integerValue(asize);
+				    if (isize < na) /*fatal("too few initialisers for array")*/;
+				    if (isize > na) fatal("too many initialisers for array");
+				}
+				if (is(List, init)) {
+				    List_do(init, ini) {
+					oop itype = typeCheck(ini, fntype);
+					if (itype != etype)
+					    fatal("cannot initialise array element type '%s' with '%s'",
+						  toString(etype), toString(itype));
+				    }
+				}
+				break;
+			    }
+			    case Tstruct: {
+				assert(is(List, init));
+				oop members = get(vartype, Tstruct,members);
+				int ssize   = get(members, List,size);
+				int isize   = List_size(init);
+				if (isize != ssize) fatal("wrong number of structure initialisers\n");
+				List_do(members, member) {
+				    oop ini   = List_get(init, do_index);
+				    oop itype = typeCheck(ini, fntype);
+				    oop mtype = get(member, Variable,type);
+				    if (itype != mtype)
+					fatal("incompatible types initialising member '%s'",
+					      get(member, Variable,name));
+				}
+				break;
+			    }
+			    default: {
+					printf("vartype:%d\n", getType(vartype));
+				oop initype = typeCheck(init, fntype);
+				if (is(Tpointer, vartype) && is(Integer,init) && !_integerValue(init))
+				    break;
+				cvt_t cvt   = converter(getType(initype), getType(vartype));
+				if (!cvt) {
+				    fatal("%sinitialising '%s': cannot convert '%s' to '%s'",
+					  tokloc(assign),
+					  toString(varname), toString(initype), toString(vartype)
+					);
+				}
+				break;
+			    }
+			}
+		    }
+		}
+	    }
+	    set(exp, VarDecls,variables, vars);
+	    return nil;
+	}
+	case TypeDecls: {
+	    oop base  	  = makeBaseType(get(exp, TypeDecls,type));
+	    oop decls 	  = get(exp, TypeDecls,typenames);
+	    oop typenames = newList();
+	    List_do(decls, decl) {
+		oop name = makeName(decl);
+		oop type = makeType(base, decl);
+		if (is(Tfunction, type)) {
+		    oop ptypes = get(type, Tfunction,parameters);
+		    if (1 == List_size(ptypes) && t_void == List_last(ptypes)) {
+			List_popLast(ptypes);
+			type = newTfunction(get(type, Tfunction,result), ptypes);
+		    }
+		}
+		oop old = Scope_local(name);
+		if (old) { // declared
+		    if (getType(old) != TypeName)
+			fatal("'%s' redeclared as different kind of symbol", toString(name));
+		    oop oldtype = get(old, TypeName,type);
+		    if (oldtype != type)
+			fatal("incompatible declarations of type '%s': %s -> %s",
+			      toString(name), toString(oldtype), toString(type));
+		}
+		else {
+		    oop typename = declareType(name, type);
+		    List_append(typenames, typename);
+		}
+	    }
+	    set(exp, TypeDecls,typenames, typenames);
+	    return nil;
+	}
+	default:
+	    break;
+    }
+    println(exp);
+    fatal("cannot typeCheck: %s", toString(exp));
+    return 0;
+}
+
+oop getPointer(oop ptr, int delta)
+{
+  oop base   = get(ptr, Pointer,base);
+  int offset = get(ptr, Pointer,offset) + delta;
+  oop type   = get(get(ptr, Pointer,type), Tpointer,target);
+  int scale  = typeSize(type);
+  switch (getType(base)) {
+    case Variable: {
+      if (offset != 0) fatal("pointer to variable no longer points to its variable: %s", toString(ptr));
+      return get(base, Variable,value);
+    }
+    case Memory: {
+	  if(get(base,Memory, free))fatal("getting freed memory was not allowed: %s", toString(base));
+      void *addr = get(base, Memory,base) + offset * scale;
+      assert(addr < get(base, Memory,base) + get(base, Memory,size));
+      switch (getType(type)) {
+	case Tchar:    	return newInteger(*(char   *)addr);
+	case Tshort:   	return newInteger(*(short  *)addr);
+	case Tint:     	return newInteger(*(int    *)addr);
+	case Tlong:    	return newInteger(*(long   *)addr);
+	case Tfloat:   	return newFloat  (*(float  *)addr);
+	case Tdouble:  	return newFloat  (*(double *)addr);
+	case Tstruct:   return newStruct(type, base);
+	default:
+	  println(ptr);
+	  fatal("cannot load '%s' from memory pointer", getTypeName(type));
+	  break;
+      }
+      break;
+    }
+    default:
+      break;
+  }
+  println(ptr);
+  fatal("cannot load '%s' through pointer", getTypeName(type));
+  return 0;
+}
+
+oop getMemory(oop memory, int offset, oop type)
+{
+    int memsize = get(memory, Memory,size);
+    int valsize = typeSize(type);
+    if (offset           <      0) fatal("memory offset is negative");
+    if (offset + valsize > memsize) fatal("memory offset out of bounds");
+    void *addr = get(memory, Memory,base) + offset;
+    switch (getType(type)) {
+	case Tchar:    	return newInteger(*(char   *)addr);
+	case Tshort:   	return newInteger(*(short  *)addr);
+	case Tint:     	return newInteger(*(int    *)addr);
+	case Tlong:    	return newInteger(*(long   *)addr);
+	case Tfloat:   	return newFloat  (*(float  *)addr);
+	case Tdouble:  	return newFloat  (*(double *)addr);
+	case Tpointer: {
+	    void *value = *(void **)addr;
+	    oop target = get(type, Tpointer,target);
+	    switch (getType(target)) {
+	      case Tstruct: 	return newPointer(   type, newMemory(value, typeSize(target), 0), 0);
+	      case Tchar:	return newPointer(t_pchar, newMemory(value, strlen(value)+1,  0), 0);
+	      default:	break;
+	    }
+	    fatal("cannot load pointer to '%s' from memory", getTypeName(target));
+	}
+	default:	break;
+    }
+    fatal("cannot load '%s' from memory", getTypeName(type));
+    return 0;
+}
+
+oop setMemory(oop memory, int offset, oop type, oop value)
+{
+    int memsize = get(memory, Memory,size);
+    int valsize = typeSize(type);
+    if (offset           <      0) fatal("memory offset is negative");
+    if (offset + valsize > memsize) fatal("memory offset out of bounds");
+    void *addr = get(memory, Memory,base) + offset;
+    switch (getType(type)) {
+	case Tchar:    	return newInteger(*(char   *)addr = _integerValue(value));
+	case Tshort:   	return newInteger(*(short  *)addr = _integerValue(value));
+	case Tint:     	return newInteger(*(int    *)addr = _integerValue(value));
+	case Tlong:    	return newInteger(*(long   *)addr = _integerValue(value));
+	case Tfloat:   	return newFloat  (*(float  *)addr = _floatValue(value));
+	case Tdouble:  	return newFloat  (*(double *)addr = _floatValue(value));
+	case Tpointer: {
+	    switch (getType(value)) {
+		case Integer: {
+		    *(void **)addr = (void *)(intptr_t)_integerValue(value);
+		    return newPointer(type, value, 0);
+		}
+		case Pointer: {
+			if(get(value, Pointer, isfree))fatal("freed memory set");
+		    oop base = get(value, Pointer,base);
+		    switch (getType(base)) {
+			case Memory: {
+			    *(void **)addr = get(base, Memory,base);
+			    return value;
+			}
+			default: break;
+		    }
+		    println(base);
+		    assert(0);
+		}
+		default: {
+		    println(value);
+		    fatal("cannot store '%s' into memory", getTypeName(type));
+		}
+	    }
+	}
+	default:	break;
+    }
+    fatal("cannot store '%s' into memory", getTypeName(type));
+    return 0;
+}
+
+oop getArray(oop array, int index)
+{
+    int size  = get(array, Array,size);
+    if (index <     0) fatal("array index is negative");
+    if (index >= size) fatal("array index out of bounds");
+    oop base  = get(array, Array,base);
+    oop type  = get(get(array, Array,type), Tarray,target);
+    int scale = typeSize(type);
+    assert(is(Memory, base));
+    void *addr = get(base, Memory,base) + index * scale;
+    assert(addr < get(base, Memory,base) + get(base, Memory,size));
+    switch (getType(type)) {
+	case Tchar:    	return newInteger(*(char   *)addr);
+	case Tshort:   	return newInteger(*(short  *)addr);
+	case Tint:     	return newInteger(*(int    *)addr);
+	case Tlong:    	return newInteger(*(long   *)addr);
+	case Tfloat:   	return newFloat  (*(float  *)addr);
+	case Tdouble:  	return newFloat  (*(double *)addr);
+	case Tpointer:  return getMemory(base, scale * index, type);
+	default:	break;
+    }
+    fatal("cannot load '%s' from array", getTypeName(type));
+    return 0;
+}
+
+oop setArray(oop array, int index, oop value)
+{
+    int size  = get(array, Array,size);
+    if (index <     0) fatal("array index is negative");
+    if (index >= size) fatal("array index out of bounds");
+    oop base  = get(array, Array,base);
+    oop type  = get(array, Array,type);
+    switch (getType(type)) {
+	case Tarray:	type = get(type, Tarray,target);	break;
+	case Tpointer:	type = get(type, Tpointer,target);	break;
+	default:	assert(0);
+    }
+    int scale = typeSize(type);
+    assert(is(Memory, base));
+    void *addr = get(base, Memory,base) + index * scale;
+    assert(addr < get(base, Memory,base) + get(base, Memory,size));
+    switch (getType(type)) {
+	case Tchar:    	return newInteger(*(char   *)addr = _integerValue(value));
+	case Tshort:   	return newInteger(*(short  *)addr = _integerValue(value));
+	case Tint:     	return newInteger(*(int    *)addr = _integerValue(value));
+	case Tlong:    	return newInteger(*(long   *)addr = _integerValue(value));
+	case Tfloat:   	return newFloat  (*(float  *)addr = _floatValue(value));
+	case Tdouble:  	return newFloat  (*(double *)addr = _floatValue(value));
+	case Tpointer: {
+	    setMemory(base, scale * index, type, value);
+	    return value;
+	}
+	default:	break;
+    }
+    fatal("cannot store '%s' into array", getTypeName(type));
+    return 0;
+}
+
+oop assign(oop lhs, oop rhs)
+{
+    oop dst = lhs;
+    if (is(Symbol, lhs)) lhs = Scope_lookup(lhs);
+    switch (getType(lhs)) {
+	case Variable: {
+	    oop ltype = get(lhs, Variable,type);
+	    if (is(Tpointer, ltype)) {
+		switch (getType(rhs)) {
+		    case Integer: {
+			rhs = newPointer(ltype, rhs, 0);
+			break;
+		    }
+		    case Pointer: {
+			if (get(rhs, Pointer,type) != ltype)
+			    rhs = newPointer(ltype, get(rhs, Pointer,base), get(rhs, Pointer,offset));
+			break;
+		    }
+		    case Array: {
+			rhs = newPointer(ltype, get(rhs, Array,base), 0);
+			break;
+		    }
+		    case String: {
+			if (t_pchar == ltype) {
+			    char *chars  = STRDUP(String_cString(rhs));
+			    oop   memory = newMemory(chars, strlen(chars) + 1, 0);
+			    rhs = newPointer(ltype, memory, 0);
+			    break;
+			}
+		    } // FALL THROUGH
+		    default: {
+			fatal("cannot assign: %s = %s'",
+			      toString(lhs), toString(rhs));
+		    }
+		}
+	    }
+	    return set(lhs, Variable,value, rhs);
+	}
+	case Index: {
+	    oop ondex = eval(get(lhs, Index,rhs));
+	    if (!is(Integer, ondex)) fatal("array index is not 'int'");
+	    int index = _integerValue(ondex);
+	    lhs = eval(get(lhs, Index,lhs));
+	    switch (getType(lhs)) {
+		case Array: return setArray(lhs, index, rhs);
+		default: break;
+	    }
+	    break;
+	}
+	case Member: { // soru.name = rhs
+	    oop name 	= get(lhs, Member,name);
+	    oop soru 	= eval(get(lhs, Member,lhs)); // struct or union
+	    oop type    = nil;
+	    oop memory  = nil;
+	    oop members = nil;
+	    int size    = 0;
+	    switch (getType(soru)) {
+		case Struct:
+		    type    = get(soru, Struct,type);
+		    memory  = get(soru, Struct,memory);
+		    members = get(type, Tstruct,members);
+		    size    = get(type, Tstruct,size);
+		    break;
+		default:
+		    fatal("this cannot happen");
+		    break;
+	    }
+	    oop value = nil;
+	    oop vtype = nil;
+	    List_do(members, var) {
+		if (name == get(var, Variable,name)) {
+		    vtype = get(var, Variable,type);
+		    value = get(var, Variable,value);
+		    break;
+		}
+	    }
+	    assert(value != nil);
+	    int offset = _integerValue(value);
+	    int vsize  = typeSize(vtype);
+	    assert(offset + vsize <= size);
+	    return setMemory(memory, offset, vtype, eval(rhs));
+	}
+	case Dereference: { // *<&var> = rhs, *<&const> = rhs, *<&memory> = rhs
+	    oop ptr = eval(get(lhs, Dereference,rhs));
+	    switch (getType(ptr)) {
+		case Pointer: { // &x
+			//if(get(ptr, Pointer, isfree))fatal("freed memory deref assign");
+		    oop base   = get(ptr, Pointer,base);
+		    int offset = get(ptr, Pointer,offset);
+		    oop type   = get(get(ptr, Pointer,type), Tpointer,target);
+		    int scale  = typeSize(type);
+		    switch (getType(base)) {
+			case Integer: { // (void *)(intptr_t)N
+			    fatal("%sattempt to store into arbitrary memory location",
+				  tokloc(get(lhs, Dereference,token)));
+			}
+			case Variable: { // &var
+				oop name = get(base, Variable, name);
+				if (get(base, Variable, isdead))fatal("Var '%s' that you tried to deref is already dead ",toString(name));
+			    if (offset) fatal("pointer modified");
+			    return set(base, Variable,value, rhs);
+			}
+			case Memory: {
+			    int size = get(base, Memory,size);
+			    if (offset < 0 || offset * scale > size - scale)
+				fatal("assigning to out-of-bounds pointer");
+			    void *addr = get(base, Memory,base) + offset * scale;
+			    switch (getType(type)) {
+				case Tchar:    	return newInteger(*(char   *)addr = _integerValue(rhs));
+				case Tshort:   	return newInteger(*(short  *)addr = _integerValue(rhs));
+				case Tint:     	return newInteger(*(int    *)addr = _integerValue(rhs));
+				case Tlong:    	return newInteger(*(long   *)addr = _integerValue(rhs));
+				case Tfloat:   	return newFloat  (*(float  *)addr = _floatValue(rhs));
+				case Tdouble:  	return newFloat  (*(double *)addr = _floatValue(rhs));
+				default:	break;
+			    }
+			    printf("ASSIGN ");  println(lhs);
+			    printf("FROM ");    println(rhs);
+			    fatal("cannot store '%s' through pointer", getTypeName(type));
+			}
+			default: break;
+		    }
+		}
+		default: break;
+	    }
+	}
+	default: break;
+    }
+    if (dst == lhs) fatal("cannot assign to: %s", toString(lhs));
+    fatal("invalid rvalue '%s' assigning to: %s", toString(lhs), toString(dst));
+    return 0;
+}
+
+int equal(oop a, oop b)
+{
+    if (a == b) return 1;
+    type_t ta = getType(a), tb = getType(b);
+    if (ta == tb) {
+	switch (getType(a)) {
+	    case Integer:	return _integerValue(a) == _integerValue(b);
+	    case Float:		return _floatValue(a) == _floatValue(b);
+	    case Pointer:	return get(a, Pointer,base) == get(b, Pointer,base);
+	    default:		break;
+	}
+	fatal("cannot compare %ss", getTypeName(a));
+    }
+    if (is(Pointer, a) && is(Integer, b)) {
+	oop base = get(a, Pointer,base);
+	if (is(Integer, base)) {
+	    oop type   = get(a, Pointer,type);
+	    int offset = get(a, Pointer,offset);
+	    int scale  = typeSize(get(type, Tpointer,target));
+	    return _integerValue(base) + offset * scale == _integerValue(b);
+	}
+	return 0;
+    }
+
+    if (is(Array, a) && is(Pointer, b)) {
+	oop ba = get(a, Array,base), bb = get(b, Pointer,base);
+	return (ba == bb) && (get(b, Pointer,offset) == 0);
+    }
+
+    if (is(Pointer, a) && is(Array, b)) return equal(b, a);
+
+    fatal("cannot compare %s with %s", getTypeName(a), getTypeName(b));
+    return 0;
+}
+
+int compare(oop a, oop b)
+{
+# define CMP(A, B) ((A) < (B) ? -1 : (A) > (B) ? 1 : 0)
+    if (a == b) return 0;
+    type_t ta = getType(a), tb = getType(b);
+    if (ta == tb) {
+	switch (ta) {
+	    case Integer:	return CMP(_integerValue(a), _integerValue(b));
+	    case Float:		return CMP(  _floatValue(a),   _floatValue(b));
+	    case Pointer: {
+		oop ba = get(a, Pointer,base),   bb = get(b, Pointer,base);
+		// BUG -- this should report an illegal comparison
+		if (ba != bb) {
+		  fatal("illegal comparison between pointers to different objects: %s and %s\n", toString(a), toString(b));
+		  return CMP((intptr_t)ba, (intptr_t)bb);
+		}
+		int oa = get(a, Pointer,offset), ob = get(b, Pointer,offset);
+		return CMP(oa, ob);
+	    }
+	    default:		break;
+	}
+	fatal("cannot compare %ss", getTypeName(a));
+    }
+    else {
+	if (is(Pointer, a) && is(Integer, b)) {
+	    oop base = get(a, Pointer,base);
+	    if (is(Integer, base)) {
+		oop type   = get(a, Pointer,type);
+		int offset = get(a, Pointer,offset);
+		int scale  = typeSize(get(type, Tpointer,target));
+		return _integerValue(base) + offset * scale == _integerValue(b);
+	    }
+	    return 0;
+	}
+    }
+    fatal("cannot compare %s with %s", getTypeName(a), getTypeName(b));
+    return 0;
+# undef CMP
+}
+
+void randomise(unsigned char *mem, size_t size)
+{
+    static unsigned lfsr = 0xC4E1u;
+    for (int i = 0;  i < size;  ++i) {
+	mem[i] = lfsr;
+	lfsr >>= 1;
+	if (lfsr & 1) lfsr ^= 0xB400;
+    }
+}
+
+oop castPointer(oop pointer, oop type)
+{
+    oop target = get(type, Tpointer,target);
+    int tscale = typeSize(target);
+    int pscale = typeSize(get(get(pointer, Pointer,type), Tpointer,target));
+    int offset = get(pointer, Pointer,offset) * pscale / tscale;
+    return newPointer(type, get(pointer, Pointer,base), offset);
+}
+
+void initialiseVariable(oop var, int local)
+{
+    oop (*evaluate)(oop) = local ? eval : preval;
+    oop type  = get(var, Variable,type);
+    oop init  = get(var, Variable,value);
+    switch (getType(type)) {
+	case Tfunction: break;
+	case Tarray: {
+	    oop   target  = get(type, Tarray,target);
+	    int   size    = _integerValue(get(type, Tarray,size));
+	    int   memsize = typeSize(target) * size;
+	    void *mem     = CALLOC(size, typeSize(target));
+	    oop   memory  = newMemory(mem, memsize, 0);
+	    oop   value   = newArray(type, memory, size);
+	    if (isNil(init)) { // size and types checked during typeCheck
+		if (local)
+		    randomise(mem, memsize);
+	    }
+	    else { // size and types checked during typeCheck
+		if (is(String, init)) {
+		    int   isize = get(init, String,size);		assert(isize <= size);
+		    char *chars = get(init, String,elements);
+		    for (int i = 0;  i < isize;  ++i)
+			setArray(value, i, newInteger(chars[i]));
+		    if (isize < size)
+			setArray(value, isize, newInteger(0));
+		}
+		else {
+		    List_do(init, ini) {
+			setArray(value, do_index, evaluate(ini));
+		    }
+		}
+	    }
+	    set(var, Variable,value, value);
+	    break;
+	}
+	case Tstruct: {
+	    int   size   = get(type, Tstruct,size);
+	    void *mem    = CALLOC(1, size);
+	    oop   memory = newMemory(mem, size, 0);
+	    oop   value  = newStruct(type, memory);
+	    if (isNil(init)) {
+		if (local)
+		    randomise(mem, size);
+	    }
+	    else { // size and types checked during typeCheck
+		oop members = get(type, Tstruct,members);
+		List_do(members, member) {
+		    int offset = _integerValue(get(member, Variable,value));
+		    oop type   = get(member, Variable,type);
+		    oop inival = evaluate(List_get(init, do_index));
+		    setMemory(memory, offset, type, inival);
+		}
+	    }
+	    set(var, Variable,value, value);
+	    break;
+	}
+	case Tpointer: {
+	    oop value = isNil(init) ? nil : evaluate(init);
+	    switch (getType(value)) {
+		case Undefined: {
+		    set(var, Variable,value, nil);
+		    break;
+		}
+		case Integer: {
+		    if (_integerValue(value)) fatal("storing non-zero integer into pointer");
+		    value = newPointer(type, value, 0);
+		    set(var, Variable,value, value);
+		    break;
+		}
+		case String: {
+		    if (type != t_pchar) fatal("cannot initialise '%s' with string literal", toString(type));
+		    value = newPointer(type, value, 0);
+		    set(var, Variable,value, value);
+		    break;
+		}
+		case Pointer: {
+		    oop vtype = get(value, Pointer,type);
+		    if (type != vtype) {
+			if (vtype != t_pvoid || !isNull(value))
+			    fatal("cannot convert non-NULL pointer '%s' to '%s'", toString(vtype), toString(type));
+			value = castPointer(value, type);
+		    }
+		    set(var, Variable,value, castPointer(value, type));
+		    break;
+		}
+		default:
+		    println(value);
+		    fatal("cannot initialise pointer with %s", getTypeName(value));
+		    break;
+	    }
+	}
+	default: {
+	    if (!isNil(init)) set(var, Variable,value, evaluate(init));
+	    break;
+	}
+    }
+}
+
+oop eval(oop exp)
+{
+    static int depth = 0;
+# define ENTER		++depth
+# define RETURN(X)	do { --depth; return (X); } while (0)
+    if (opt_v > 2) { printf("EVAL  "); printiln(exp, depth); }
+    ENTER;
+    switch (getType(exp)) {
+	case Undefined:	assert(!"this cannot happen");
+	case Input:	assert(!"this cannot happen");
+	case Token:	assert(!"this cannot happen");
+	case Integer:	RETURN(exp);
+	case Float:	RETURN(exp);
+	case Pointer:	RETURN(exp);
+	case Array:	RETURN(exp);
+	case Struct:	RETURN(exp);
+	case Symbol: {
+	    oop value = Scope_lookup(exp);
+	    if (!value) 	fatal("'%s' is undefined\n",     get(exp, Symbol,name));
+	    switch (getType(value)) {
+		case Variable: {
+		    value = get(value, Variable,value);
+		    if (isNil(value)) fatal("use of uninitialised variable '%s'", get(exp, Symbol,name));
+		    RETURN(value);
+		}
+		case Function:	RETURN(value);
+		case Primitive:	RETURN(value);
+		default:	fatal("cannot eval: %s", toString(value));
+	    }
+	    break;
+	}
+	case Pair:	assert(!"this cannot happen");
+	case String:	RETURN(exp);
+	case List: 	assert(!"this cannot happen");
+	case Memory:	assert(!"this cannot happen");
+	case Primitive:	RETURN(exp);
+	case Reference: RETURN(exp);
+	case Closure:	RETURN(exp);
+	case Call: {
+ 	    oop fun  = eval(get(exp, Call,function));
+ 	    oop args = get(exp, Call,arguments);
+ 	    RETURN(apply(fun, args, nil));
+	}
+	case Block: {
+	    Object  *stmts  = get(exp, Block,statements);
+	    int      size   = get(stmts, List,size);
+	    oop *elts   = get(stmts, List,elements);
+	    Object  *result = nil;
+	    Scope_begin();
+	    switch (nlrPush()) { // longjmp occurred
+		case NLR_INIT:     break;
+		case NLR_RETURN:   Scope_end();  --depth;  nlrReturn(NLR_RETURN,   nlrPop());
+		case NLR_CONTINUE: Scope_end();  --depth;  nlrReturn(NLR_CONTINUE, nlrPop());
+		case NLR_BREAK:	   Scope_end();  --depth;  nlrReturn(NLR_BREAK,    nlrPop());
+	    }
+	    for (int i = 0;  i < size;  ++i) {
+		result = eval(elts[i]);
+	    }
+	    Scope_end();
+	    nlrPop();
+	    RETURN(result);
+	}
+	case Addressof: {
+	    oop rhs = get(exp, Addressof,rhs);
+	    switch (getType(rhs)) {
+		case Symbol: {
+		    rhs = Scope_lookup(rhs);
+		    if (!rhs) assert(!"this cannot happen");
+		    switch (getType(rhs)) {
+			case Variable: {
+			    oop type = get(rhs, Variable,type);
+			    if (is(Tarray,type)) RETURN(get(rhs, Variable,value));
+			    RETURN(newPointer(newTpointer(get(rhs, Variable,type)), rhs, 0));
+			}
+			default:
+			    break;
+		    }
+		    break;
+		}
+		case Index: {
+		    oop ondex = eval(get(rhs, Index,rhs));
+		    if (!is(Integer, ondex))
+			fatal("%sarray index is not 'int'", tokloc(get(rhs, Index,token)));
+		    int index = _integerValue(ondex);
+		    oop lhs = eval(get(rhs, Index,lhs));
+		    switch (getType(lhs)) {
+			case Array: {
+			    oop type = get(lhs, Array,type);
+			    oop base = get(lhs, Array,base);	// xxx check index against size
+			    RETURN(newPointer(newTpointer(get(type, Tarray,target)), base, index));
+			}
+			default: break;
+		    }
+		    break;
+		}
+		default:
+		    break;
+	    }
+	    fatal("%scannot take address: %s", tokloc(get(exp, Addressof,token)), toString(exp));
+	    break;
+	}
+	case Dereference: {
+	    oop rhs = get(exp, Dereference,rhs);
+	    rhs = eval(rhs);
+	    switch (getType(rhs)) {
+	      case Pointer:	{
+			//if(get(rhs, Pointer, isfree))fatal("freed memory deref/eval");
+			RETURN(getPointer(rhs, 0));
+		}
+		default:	break;
+	    }
+	    println(rhs);
+	    assert(!"cannot dereference\n");
+	    exit(1);
+	    break;
+	}
+	case Sizeof: {
+	    RETURN(get(exp, Sizeof,size));
+	}
+	case Unary: {
+	    unary_t op  = get(exp, Unary,operator);
+	    oop     rhs = get(exp, Unary,rhs);
+	    switch (op) {
+		case PREINC:
+		case PREDEC:
+		case POSTINC:
+		case POSTDEC: {
+		    if (is(Symbol, rhs)) {
+			rhs = Scope_lookup(rhs);
+			switch (getType(rhs)) {
+			    case Variable: {
+				oop value  = get(rhs, Variable,value);
+				oop result = value;
+				switch (op) {
+				    case PREINC:  result = value = incr(value,  1);		break;
+				    case PREDEC:  result = value = incr(value, -1);		break;
+				    case POSTINC: result = value;  value = incr(value,  1);	break;
+				    case POSTDEC: result = value;  value = incr(value, -1);	break;
+				    default:	  assert("!this cannot happen");
+				}
+				set(rhs, Variable,value, value);
+				RETURN(result);
+			    }
+			    default:  break;
+			}
+		    }
+		    fatal("%sillegal increment operation: %s",
+			  tokloc(get(exp, Unary,token)), toString(exp));
+		}
+		case NEG:
+		case NOT:
+		case COM: {
+		    rhs = eval(rhs);
+		    switch (op) {
+			case NEG:	RETURN( is(Float, rhs)
+						? newFloat  (-floatValue  (rhs))
+						: newInteger(-integerValue(rhs)) );
+			case NOT:	RETURN(isFalse(rhs) ? true : false);
+			case COM:	RETURN(newInteger(~integerValue(rhs)));
+			default:	break;
+		    }
+		}
+	    }
+	    assert("!this cannot happen");
+	    break;
+	}
+	case Binary: {
+	    oop lhs = get(exp, Binary,lhs);
+	    oop rhs = get(exp, Binary,rhs);
+	    switch (get(exp, Binary,operator)) {
+		case LAND:   RETURN(isFalse(eval(lhs)) ? false : eval(rhs));
+		case LOR:    RETURN(isTrue (eval(lhs)) ? true  : eval(rhs));
+		default: {
+		    lhs = eval(lhs);
+		    rhs = eval(rhs);
+		    if (Float == getType(lhs) || Float == getType(rhs)) { // floating point result
+			switch (get(exp, Binary,operator)) {
+			    case MUL: 	RETURN(FBINOP(lhs, * , rhs));
+			    case DIV: 	RETURN(FBINOP(lhs, / , rhs));
+			    case MOD: 	RETURN(newFloat(fmod(floatValue(lhs), floatValue(rhs))));
+			    case ADD: 	RETURN(FBINOP(lhs, + , rhs));
+			    case SUB: 	RETURN(FBINOP(lhs, - , rhs));
+			    case SHL: 	RETURN(IBINOP(lhs, <<, rhs));
+			    case SHR: 	RETURN(IBINOP(lhs, >>, rhs));
+			    case LT: 	RETURN(FRELOP(lhs, < , rhs));
+			    case LE: 	RETURN(FRELOP(lhs, <=, rhs));
+			    case GE: 	RETURN(FRELOP(lhs, >=, rhs));
+			    case GT: 	RETURN(FRELOP(lhs, > , rhs));
+			    case EQ: 	RETURN(FRELOP(lhs, == , rhs));
+			    case NE: 	RETURN(FRELOP(lhs, !=, rhs));
+			    case BAND: 	RETURN(IBINOP(lhs, & , rhs));
+			    case BXOR: 	RETURN(IBINOP(lhs, ^ , rhs));
+			    case BOR: 	RETURN(IBINOP(lhs, | , rhs));
+			    case LAND:
+			    case LOR:
+				break;
+			}
+		    }
+		    else { // non-float result
+			switch (get(exp, Binary,operator)) {
+			    case MUL: 	RETURN(IBINOP(lhs, * , rhs));
+			    case DIV: 	RETURN(IBINOP(lhs, / , rhs));
+			    case MOD: 	RETURN(IBINOP(lhs, % , rhs));
+			    case ADD: {
+				if (is(Pointer, lhs) && is(Integer, rhs)) {
+				    oop type   = get(lhs, Pointer,type);
+				    oop base   = get(lhs, Pointer,base);
+				    int offset = get(lhs, Pointer,offset);
+				    offset += _integerValue(rhs);
+				    RETURN(newPointer(type, base, offset));
+				}
+				if (is(Array, lhs) && is(Integer, rhs)) {
+				    oop type = newTpointer(get(get(lhs, Array,type), Tarray,target));
+				    oop ptr  = newPointer(type, get(lhs, Array,base), _integerValue(rhs));
+				    RETURN(ptr);
+				}
+				RETURN(IBINOP(lhs, + , rhs));
+			    }
+			    case SUB: 	RETURN(IBINOP(lhs, - , rhs));
+			    case SHL: 	RETURN(IBINOP(lhs, <<, rhs));
+			    case SHR: 	RETURN(IBINOP(lhs, >>, rhs));
+			    case LT: 	RETURN(compare(lhs, rhs) <  0 ? true : false);
+			    case LE: 	RETURN(compare(lhs, rhs) <= 0 ? true : false);
+			    case GE: 	RETURN(compare(lhs, rhs) >= 0 ? true : false);
+			    case GT: 	RETURN(compare(lhs, rhs) >  0 ? true : false);
+			    case EQ:	RETURN(equal(lhs, rhs) ? true : false);
+			    case NE:	RETURN(equal(lhs, rhs) ? false : true);
+			    case BAND: 	RETURN(IBINOP(lhs, & , rhs));
+			    case BXOR: 	RETURN(IBINOP(lhs, ^ , rhs));
+			    case BOR: 	RETURN(IBINOP(lhs, | , rhs));
+			    case LAND:
+			    case LOR:
+				break;
+			}
+		    }
+		}
+	    }
+	    assert(!"this cannot happen");
+	    break;
+	}
+	case Index: {
+	    oop ondex = eval(get(exp, Index,rhs));
+	    if (!is(Integer, ondex)) fatal("array index is not 'int'");
+	    int index = _integerValue(ondex);
+	    oop lhs = eval(get(exp, Index,lhs));
+	    switch (getType(lhs)) {
+	      case Array: 	RETURN(getArray(lhs, index));
+	      case Pointer: 	RETURN(getPointer(lhs, index));
+	      default: break;
+	    }
+	    println(lhs);
+	    assert(0);
+	    break;
+	}
+	case Member: {
+	    oop soru 	= eval(get(exp, Member,lhs)); // struct or union
+	    oop name 	= get(exp, Member,name);
+	    oop type    = nil;
+	    oop memory  = nil;
+	    oop members = nil;
+	    int size    = 0;
+	    switch (getType(soru)) {
+		case Struct:
+		    type    = get(soru, Struct,type);
+		    memory  = get(soru, Struct,memory);
+		    members = get(type, Tstruct,members);
+		    size    = get(type, Tstruct,size);
+		    break;
+		default:
+		    fatal("this cannot happen");
+		    break;
+	    }
+	    oop value = nil;
+	    oop vtype = nil;
+	    List_do(members, var) {
+		if (name == get(var, Variable,name)) {
+		    vtype = get(var, Variable,type);
+		    value = get(var, Variable,value);
+		    break;
+		}
+	    }
+	    assert(value != nil);
+	    int offset = _integerValue(value);
+	    int vsize  = typeSize(vtype);
+	    assert(offset + vsize <= size);
+	    RETURN(getMemory(memory, offset, vtype));
+	}
+	case Assign: {
+	    RETURN(assign(get(exp, Assign,lhs), eval(get(exp, Assign,rhs))));
+	}
+	case Cast: {
+	    cvt_t cvt = get(exp, Cast,converter);		assert(cvt);
+	    oop  type = get(exp, Cast,type);
+	    oop   rhs = eval(get(exp, Cast,rhs));
+	    rhs = cvt(rhs);
+	    switch (getType(type)) {
+		case Tpointer: {
+		    if (is(Pointer,rhs)) RETURN(castPointer(rhs, type));
+		    default: break;
+		}
+	    }
+	    RETURN(cvt(rhs));
+	}
+	case While: {
+	    oop cond   = get(exp, While,condition);
+	    oop expr   = get(exp, While,expression);
+	    oop result = nil;
+	    switch (nlrPush()) {
+		case NLR_INIT:		break;
+		case NLR_RETURN:	--depth;  nlrReturn(NLR_RETURN, nlrPop()); // propagate upwards
+		case NLR_CONTINUE:	break;
+		case NLR_BREAK:		--depth;  return nlrPop();
+	    }
+	    while (isTrue(eval(cond))) {
+		result = eval(expr);
+	    }
+	    nlrPop();
+	    RETURN(result);
+	}
+	case For: {
+	    oop init = get(exp, For,initialiser);
+	    oop cond = get(exp, For,condition);
+	    oop step = get(exp, For,update);
+	    oop body = get(exp, For,body);
+	    Scope_begin();
+	    switch (nlrPush()) {
+		case NLR_INIT:		break;
+		case NLR_RETURN:	--depth;  Scope_end();  nlrReturn(NLR_RETURN, nlrPop());
+		case NLR_CONTINUE:	goto continued;
+		case NLR_BREAK:		goto broken;
+	    }
+	    eval(init);
+	    while (isTrue(eval(cond))) {
+		eval(body);
+	      continued:
+		eval(step);
+	    }
+	  broken:
+	    Scope_end();
+	    nlrPop();
+	    RETURN(nil);
+	}
+	case If: {
+	    oop cond   = get(exp, If,condition);
+	    oop conseq = get(exp, If,consequent);
+	    oop altern = get(exp, If,alternate);
+	    if (isTrue(eval(cond))) eval(conseq);
+	    else if (!isNil(altern)) eval(altern);
+	    RETURN(nil);
+	}
+	case Return: {
+	    --depth;
+	    nlrReturn(NLR_RETURN, eval(get(exp, Return,value)));
+	    break;
+	}
+	case Continue: {
+	    --depth;
+	    nlrReturn(NLR_CONTINUE, nil);
+	    break;
+	}
+	case Break: {
+	    --depth;
+	    nlrReturn(NLR_BREAK, nil);
+	    break;
+	}
+	case Tvoid:	assert(!"unimplemented");	break;
+	case Tchar:	assert(!"unimplemented");	break;
+	case Tshort:	assert(!"unimplemented");	break;
+	case Tint:	assert(!"unimplemented");	break;
+	case Tlong:	assert(!"unimplemented");	break;
+	case Tfloat:	assert(!"unimplemented");	break;
+	case Tdouble:	assert(!"unimplemented");	break;
+	case Tpointer:	assert(!"unimplemented");	break;
+	case Tarray:	assert(!"unimplemented");	break;
+	case Tstruct:	assert(!"unimplemented");	break;
+	case Tfunction:	assert(!"unimplemented");	break;
+	case Tetc:	assert(!"unimplemented");	break;
+	case VarDecls: {
+	    // declareVariables(exp);
+	    List_do(get(exp, VarDecls,variables), var) {
+		oop name = get(var, Variable,name);
+		var = newVariable(name, get(var, Variable,type), get(var, Variable,value),0);
+		declare(name, var);
+		initialiseVariable(var, 1);
+	    }
+	    RETURN(nil);
+	}
+	case TypeDecls: { // local typenames only used within typeCheck() and can be ignored here
+	    RETURN(nil);
+	}
+	case Scope:	break;
+	case TypeName:	break;
+	case Variable:	break;
+	case Constant:	break;
+	case Function:  break;
+    }
+    println(exp);
+    assert(!"this cannot happen");
+    RETURN(0);
+# undef ENTER
+# undef LEAVE
+}
+
+// pre-evaluate a top-level declaration, definition, or constant expression
+
+oop preval(oop exp)
+{
+    if (opt_v > 2) { printf("PREVAL  "); println(exp); }
+    switch (getType(exp)) {
+	case Undefined:		return exp;
+	case Input:		break;
+	case Token:		break;
+	case Integer:		return exp;
+	case Float:		return exp;
+	case Pointer:		return exp;
+	case Array:		return exp;
+	case Struct:		return exp;
+	case Symbol:		break;
+	case Pair:		break;
+	case String:		break;
+	case List:		break;
+	case Memory:		break;
+	case Primitive:		return exp;
+	case Reference:		break;
+	case Closure:		break;
+	case Call:		break;
+	case Block:		break;
+	case Addressof:		break;
+	case Dereference:	break;
+	case Sizeof:		return get(exp, Sizeof,size);
+	case Unary: {
+	    unary_t op  = get(exp, Unary,operator);
+	    oop     rhs = get(exp, Unary,rhs);
+	    switch (op) {
+		case PREINC:
+		case PREDEC:
+		case POSTINC:
+		case POSTDEC: {
+		    if (is(Symbol, rhs)) {
+			rhs = Scope_lookup(rhs);
+			switch (getType(rhs)) {
+			    case Variable: {
+				oop value  = get(rhs, Variable,value);
+				oop result = value;
+				switch (op) {
+				    case PREINC:  result = value = incr(value,  1);		break;
+				    case PREDEC:  result = value = incr(value, -1);		break;
+				    case POSTINC: result = value;  value = incr(value,  1);	break;
+				    case POSTDEC: result = value;  value = incr(value, -1);	break;
+				    default:	  assert("!this cannot happen");
+				}
+				set(rhs, Variable,value, value);
+				return result;
+			    }
+			    default:  break;
+			}
+		    }
+		    fatal("%sillegal increment operation: %s",
+			  tokloc(get(exp, Unary,token)), toString(exp));
+		}
+		case NEG:
+		case NOT:
+		case COM: {
+		    rhs = preval(rhs);
+		    switch (op) {
+			case NEG:	return ( is(Float, rhs)
+						 ? newFloat  (-floatValue  (rhs))
+						 : newInteger(-integerValue(rhs)) );
+			case NOT:	return isFalse(rhs) ? true : false;
+			case COM:	return newInteger(~integerValue(rhs));
+			default:	break;
+		    }
+		}
+	    }
+	    assert("!this cannot happen");
+	    break;
+	}
+	case Binary: {
+	    oop lhs = get(exp, Binary,lhs);
+	    oop rhs = get(exp, Binary,rhs);
+	    switch (get(exp, Binary,operator)) {
+		case LAND:   return isFalse(preval(lhs)) ? false : preval(rhs);
+		case LOR:    return isTrue (preval(lhs)) ? true  : preval(rhs);
+		default: {
+		    lhs = preval(lhs);
+		    rhs = preval(rhs);
+		    if (Float == getType(lhs) || Float == getType(rhs)) { // floating point result
+			switch (get(exp, Binary,operator)) {
+			    case MUL: 	return FBINOP(lhs, * , rhs);
+			    case DIV: 	return FBINOP(lhs, / , rhs);
+			    case MOD: 	return newFloat(fmod(floatValue(lhs), floatValue(rhs)));
+			    case ADD: 	return FBINOP(lhs, + , rhs);
+			    case SUB: 	return FBINOP(lhs, - , rhs);
+			    case SHL: 	return IBINOP(lhs, <<, rhs);
+			    case SHR: 	return IBINOP(lhs, >>, rhs);
+			    case LT: 	return FRELOP(lhs, < , rhs);
+			    case LE: 	return FRELOP(lhs, <=, rhs);
+			    case GE: 	return FRELOP(lhs, >=, rhs);
+			    case GT: 	return FRELOP(lhs, > , rhs);
+			    case EQ: 	return FRELOP(lhs, == , rhs);
+			    case NE: 	return FRELOP(lhs, !=, rhs);
+			    case BAND: 	return IBINOP(lhs, & , rhs);
+			    case BXOR: 	return IBINOP(lhs, ^ , rhs);
+			    case BOR: 	return IBINOP(lhs, | , rhs);
+			    case LAND:
+			    case LOR:
+				break;
+			}
+		    }
+		    else { // non-float result
+			switch (get(exp, Binary,operator)) {
+			    case MUL: 	return IBINOP(lhs, * , rhs);
+			    case DIV: 	return IBINOP(lhs, / , rhs);
+			    case MOD: 	return IBINOP(lhs, % , rhs);
+			    case ADD: {
+				if (is(Pointer, lhs) && is(Integer, rhs)) {
+				    oop type   = get(lhs, Pointer,type);
+				    oop base   = get(lhs, Pointer,base);
+				    int offset = get(lhs, Pointer,offset);
+				    offset += _integerValue(rhs);
+				    return newPointer(type, base, offset);
+				}
+				if (is(Array, lhs) && is(Integer, rhs)) {
+				    oop type = newTpointer(get(get(lhs, Array,type), Tarray,target));
+				    oop ptr  = newPointer(type, get(lhs, Array,base), _integerValue(rhs));
+				    return ptr;
+				}
+				return IBINOP(lhs, + , rhs);
+			    }
+			    case SUB: 	return IBINOP(lhs, - , rhs);
+			    case SHL: 	return IBINOP(lhs, <<, rhs);
+			    case SHR: 	return IBINOP(lhs, >>, rhs);
+			    case LT: 	return compare(lhs, rhs) <  0 ? true : false;
+			    case LE: 	return compare(lhs, rhs) <= 0 ? true : false;
+			    case GE: 	return compare(lhs, rhs) >= 0 ? true : false;
+			    case GT: 	return compare(lhs, rhs) >  0 ? true : false;
+			    case EQ:	return equal(lhs, rhs) ? true : false;
+			    case NE:	return equal(lhs, rhs) ? false : true;
+			    case BAND: 	return IBINOP(lhs, & , rhs);
+			    case BXOR: 	return IBINOP(lhs, ^ , rhs);
+			    case BOR: 	return IBINOP(lhs, | , rhs);
+			    case LAND:
+			    case LOR:
+				break;
+			}
+		    }
+		}
+	    }
+	    assert(!"this cannot happen");
+	    break;
+	}
+
+
+	case Index:		break;
+	case Member:		break;
+	case Assign:		break;
+	case Cast:		break;
+	case While:		break;
+	case For:		break;
+	case If:		break;
+	case Return:		break;
+	case Continue:		break;
+	case Break:		break;
+	case Tvoid:		break;
+	case Tchar:		break;
+	case Tshort:		break;
+	case Tint:		break;
+	case Tlong:		break;
+	case Tfloat:		break;
+	case Tdouble:		break;
+	case Tpointer:		break;
+	case Tarray:		break;
+	case Tstruct:		break;
+	case Tfunction:		break;
+	case Tetc:		break;
+	case VarDecls: {
+	    List_do(get(exp, VarDecls,variables), var) {
+		initialiseVariable(var, 0);
+	    }
+	    return nil;
+	}
+	case TypeDecls: {
+	    oop types = get(exp, TypeDecls,typenames);
+	    List_do(types, type) {
+		assert(Scope_lookup(get(type, TypeName,name)));
+	    }
+	    return nil;
+	}
+	case Scope:	break;
+	case TypeName:	break;
+	case Variable:	break;
+	case Constant:	break;
+	case Function: {
+	    assert(Scope_lookup(get(exp, Function,name)));
+	    return exp;
+	}
+    }
+    println(exp);
+    assert(!"this cannot happen");
+    return 0;
+}
+
+enum opcode_t { iHALT = 0, iPUSH, iPOP,
+    iNOT, iCOM, iNEG, iDEREF, iINDEX,
+    iMUL, iDIV, iMOD, iADD, iSUB, iSHL, iSHR,
+    iLT, iLE, iGE, iGT, iEQ, iNE,
+    iAND, iXOR, iOR,
+    iGETGVAR, iSETGVAR,
+    iCLOSE,
+    iCALL, iRETURN,
+    iJMP, iJMPF,
+};
+
+oop stackError(char *reason)
+{
+    printf("stack %s\n", reason);
+    exit(1);
+    return nil;
+}
+
+void disassemble(oop program)
+{
+    oop *code = get(program, List,elements);
+    int      size = get(program, List,size);
+    int      pc   = 0;
+    while (pc < size) {
+	printf("%04d", pc);
+	int opcode = _integerValue(code[pc++]);
+	printf(" %02d\t", opcode);
+	switch (opcode) {
+	    case iHALT:		printf("HALT\n");				break;
+	    case iPUSH:		printf("PUSH\t");	println(code[pc++]);	break;
+	    case iPOP:		printf("POP\n");				break;
+	    case iNOT:		printf("NOT\n");				break;
+	    case iCOM:		printf("COM\n");				break;
+	    case iNEG:		printf("NEG\n");				break;
+	    case iDEREF:	printf("DEREF\n");				break;
+	    case iINDEX:	printf("INDEX\n");				break;
+	    case iMUL:		printf("MUL\n");				break;
+	    case iDIV:		printf("DIV\n");				break;
+	    case iMOD:		printf("MOD\n");				break;
+	    case iADD:		printf("ADD\n");				break;
+	    case iSUB:		printf("SUB\n");				break;
+	    case iSHL:		printf("SHL\n");				break;
+	    case iSHR:		printf("SHR\n");				break;
+	    case iLT:		printf("LT\n");					break;
+	    case iLE:		printf("LE\n");					break;
+	    case iGE:		printf("GE\n");					break;
+	    case iGT:		printf("GT\n");					break;
+	    case iEQ:		printf("EQ\n");					break;
+	    case iNE:		printf("NE\n");					break;
+	    case iAND:		printf("AND\n");				break;
+	    case iXOR:		printf("XOR\n");				break;
+	    case iOR:		printf("OR\n");					break;
+	    case iGETGVAR:	printf("GETGVAR\t");  	println(code[pc++]);	break;
+	    case iSETGVAR:	printf("SETGVAR\t");  	println(code[pc++]);	break;
+	    case iCLOSE:	printf("CLOSE\t");	println(code[pc++]);	break;
+	    case iCALL:		printf("CALL\t");	println(code[pc++]);	break;
+	    case iRETURN:	printf("RETURN\n");				break;
+	    case iJMP:		printf("JMP\t");	println(code[pc++]);	break;
+	    case iJMPF:		printf("JMPF\t");	println(code[pc++]);	break;
+	}
+    }
+}
+
+
+oop execute(oop program)
+{
+    oop *code = get(program, List,elements);
+    int pc = 0;
+
+    oop stack[32];
+    int sp = 32; // clear the stack
+
+    oop env = nil;
+
+    struct Frame {
+	Object  *env;
+	oop *code;
+	int      pc;
+    } frames[32];
+    int fp = 32;
+
+# define push(O)	(sp >  0 ? stack[--sp] = (O) : stackError("overflow"))
+# define pop()		(sp < 32 ? stack[sp++] : stackError("underflow"))
+# define top		(stack[sp])
+
+    for (;;) {
+	oop insn = code[pc++];
+	switch ((enum opcode_t)_integerValue(insn)) {
+	    case iHALT: {
+		if (sp < 31) fatal("%d items on stack at end of execution", 32-sp);
+		if (sp < 32) return stack[sp];
+		fatal("stack empty at end of execution");
+		return nil;
+	    }
+	    case iPUSH: {
+		oop operand = code[pc++];
+		push(operand);
+		continue;
+	    }
+	    case iPOP: {
+		pop();
+		continue;
+	    }
+	    case iNOT: {
+		top = (isFalse(top) ? true : false);
+		continue;
+	    }
+	    case iCOM: {
+		top = newInteger(~integerValue(top));
+		continue;
+	    }
+	    case iNEG: {
+		top = is(Float, top) ? newFloat(-floatValue(top)) : newInteger(-integerValue(top));
+		continue;
+	    }
+	    case iDEREF: {
+		assert(!"unimplemented");
+		continue;
+	    }
+	    case iINDEX: {
+		assert(!"unimplemented");
+		continue;
+	    }
+#          define BINOP(OP) {									\
+		    oop rhs = pop(), lhs = pop();						\
+		    if (is(Float, lhs) || is(Float, rhs))	push(FBINOP(lhs, OP, rhs));	\
+		    else					push(IBINOP(lhs, OP, rhs));	\
+		    continue;									\
+		}
+	    case iMUL: BINOP(*);
+	    case iDIV: BINOP(/);
+	    case iMOD: {
+		oop rhs = pop(), lhs = pop();
+		if (is(Float, lhs) || is(Float, rhs))
+		    push(newFloat(fmod(floatValue(lhs), floatValue(rhs))));
+		else
+		    push(IBINOP(lhs, %, rhs));
+		continue;
+	    }
+	    case iADD: BINOP(+);
+	    case iSUB: BINOP(-);
+#          undef BINOP
+#          define BINOP(OP) {				\
+		    oop rhs = pop(), lhs = pop();	\
+		    push(IBINOP(lhs, OP, rhs));		\
+		    continue;				\
+		}
+	    case iSHL:	BINOP(<<);
+	    case iSHR:	BINOP(>>);
+	    case iAND:	BINOP(&);
+	    case iXOR:	BINOP(^);
+	    case iOR:	BINOP(|);
+#          undef BINOP
+#          define BINOP(OP) {									\
+		    oop rhs = pop(), lhs = pop();						\
+		    if (is(Float, lhs) || is(Float, rhs))					\
+			push(floatValue(lhs) OP floatValue(rhs) ? true : false);		\
+		    else									\
+			push(integerValue(lhs) OP integerValue(rhs) ? true : false);		\
+		    continue;									\
+		}
+	    case iLT:	BINOP(< );
+	    case iLE:	BINOP(<=);
+	    case iGE:	BINOP(>=);
+	    case iGT:	BINOP(> );
+	    case iEQ:	BINOP(==);
+	    case iNE:	BINOP(!=);
+#          undef BINOP
+	    case iGETGVAR: {
+		oop operand = code[pc++];
+		oop keyval  = assoc(env, operand);
+		if (nil != keyval) {
+		    push(get(keyval, Pair,tail));
+		    continue;
+		}
+		push(get(operand, Symbol,value));
+		continue;
+	    }
+	    case iSETGVAR: {
+		oop operand = code[pc++];
+		oop keyval  = assoc(env, operand);
+		if (nil != keyval) {
+		    set(keyval, Pair,tail, top);
+		    continue;
+		}
+		set(operand, Symbol,value, top);
+		continue;
+	    }
+	    case iCLOSE: {
+		oop func = code[pc++];
+		push(newClosure(func, env));
+		continue;
+	    }
+	    case iCALL: {
+		int     argc = _integerValue(code[pc++]);
+		oop func = pop();
+		switch (getType(func)) {
+		    case Primitive: {
+			oop result = get(func, Primitive,function)(argc, stack + sp, nil);
+			sp += argc; // pop all arguments
+			push(result);
+			continue; // next instruction
+		    }
+		    case Closure: {
+			Object  *function    = get(func, Closure,function);
+			Object  *environment = get(func, Closure,environment);
+			Object  *parameters  = get(function, Function,parameters);
+			int      parc        = get(parameters, List,size);
+			oop *parv        = get(parameters, List,elements);
+			int      parn        = 0;
+			while (parn < parc && argc > 0) {
+			    environment = newPair(newPair(parv[parn++], pop()), environment);
+			    --argc;
+			}
+			while (parn < parc)
+			    environment = newPair(newPair(parv[parn++], nil), environment);
+			sp += argc;
+			if (fp < 1) fatal("too many function calls");
+			--fp;
+			frames[fp].env  = env;   env  = environment;
+			frames[fp].code = code;  code = get(function, Function,code);
+			frames[fp].pc   = pc;    pc   = 0;
+			assert(code != 0);
+			continue;
+		    }
+		    default:
+			fatal("cannot call value of type %d", getType(func));
+		}
+		continue;
+	    }
+	    case iRETURN: {
+		assert(fp < 32);
+		env  = frames[fp].env;
+		code = frames[fp].code;
+		pc   = frames[fp].pc;
+		++fp;
+		continue;
+	    }
+	    case iJMP: {
+		int dest = _integerValue(code[pc++]);
+		pc = dest;
+		continue;
+	    }
+	    case iJMPF:	{
+		int dest = _integerValue(code[pc++]);
+		oop cond = pop();
+		if (nil == cond) pc = dest;
+		continue;
+	    }
+	}
+    }
+    assert(!"this cannot happen");
+    return 0;
+}
+
+#define EMITo(O)	List_append(program, (O))
+#define EMITi(I)	EMITo(newInteger(I))
+
+#define EMIToo(O, P)	(( EMITo(O), EMITo(P) ))
+#define EMITio(I, P)	EMIToo(newInteger(I), P)
+#define EMITii(I, J)	EMIToo(newInteger(I), newInteger(J))
+
+oop compileFunction(oop exp);
+
+void compileOn(oop exp, oop program, oop cs, oop bs)
+{
+    switch (getType(exp)) {
+	case Undefined:	EMITio(iPUSH, exp);	return;
+	case Input:	EMITio(iPUSH, exp);	return;
+	case Token:	assert(!"this cannot happen");
+	case Integer:	EMITio(iPUSH, exp);	return;
+	case Float:	EMITio(iPUSH, exp);	return;
+	case Pointer:	assert(!"unimplemented");
+	case Array:	assert(!"unimplemented");
+	case Struct:	assert(!"unimplemented");
+	case Symbol:	EMITio(iGETGVAR, exp);	return;
+	case Pair:	EMITio(iPUSH, exp);	return;
+	case String:	EMITio(iPUSH, exp);	return;
+	case List:	assert(!"unimplemented");
+	case Memory:	assert(!"unimplemented");
+	case Primitive:	EMITio(iPUSH, exp);	return;
+	case Reference: assert(!"unimplemented");
+	case Closure:	EMITio(iPUSH, exp);	return;
+	case Call: {
+	    Object  *args = get(exp, Call,arguments);
+	    int      argc = get(args, List,size);
+	    oop *argv = get(args, List,elements);
+	    for (int n = argc; n--;) compileOn(argv[n], program, cs, bs);
+	    compileOn(get(exp, Call,function), program, cs, bs);	    // GETVAR	print
+	    EMITii(iCALL, argc);
+	    return;
+	}
+	case Block: {
+	    oop statements = get(exp, Block,statements);
+	    int      size = get(statements, List,size);
+	    if (0 == size) {
+		EMITio(iPUSH, nil);
+		return;
+	    }
+	    oop *exps = get(statements, List,elements);
+	    for (int i = 0;  i < size - 1;  ++i) {
+		compileOn(exps[i], program, cs, bs);
+		EMITi(iPOP);
+	    }
+	    compileOn(exps[size - 1], program, cs, bs);
+	    return;
+	}
+	case Addressof:		assert(!"unimplemented");
+	case Dereference:	assert(!"unimplemented");
+	case Sizeof:		assert(!"unimplemented");
+	case Unary: {
+	    compileOn(get(exp, Unary,rhs), program, cs, bs);
+	    switch (get(exp, Unary,operator)) {
+		case NEG:	EMITi(iNEG);	return;
+		case NOT:	EMITi(iNOT);	return;
+		case COM:	EMITi(iCOM);	return;
+		case PREINC:	assert(!"unimplemented");
+		case PREDEC:	assert(!"unimplemented");
+		case POSTINC:	assert(!"unimplemented");
+		case POSTDEC:	assert(!"unimplemented");
+	    }
+	    break;
+	}
+	case Binary: { // MUL{op, lhs, rhs}
+	    switch (get(exp, Binary,operator)) {
+		case LAND:	assert(!"unimplemented");
+		case LOR:	assert(!"unimplemented");
+		default:	break;
+	    }
+	    compileOn(get(exp, Binary,lhs), program, cs, bs);
+	    compileOn(get(exp, Binary,rhs), program, cs, bs);
+	    switch (get(exp, Binary,operator)) {
+		case MUL:	EMITi(iMUL);	return;
+		case DIV:	EMITi(iDIV);	return;
+		case MOD:	EMITi(iMOD);	return;
+		case ADD:	EMITi(iADD);	return;
+		case SUB:	EMITi(iSUB);	return;
+		case SHL:	EMITi(iSHL);	return;
+		case SHR:	EMITi(iSHR);	return;
+		case LT:	EMITi(iLT);	return;
+		case LE:	EMITi(iLE);	return;
+		case GE:	EMITi(iGE);	return;
+		case GT:	EMITi(iGT);	return;
+		case EQ:	EMITi(iEQ);	return;
+		case NE:	EMITi(iNE);	return;
+		case BAND:	EMITi(iAND);	return;
+		case BXOR:	EMITi(iXOR);	return;
+		case BOR:	EMITi(iOR);	return;
+		case LAND:
+		case LOR:
+		    assert(!"unimplemented");
+	    }
+	}
+	case Index:		    assert(!"unimplemented");
+	case Member:		    assert(!"unimplemented");
+	case Assign: {
+	    oop symbol = get(exp, Assign,lhs);
+	    oop expr   = get(exp, Assign,rhs);
+	    compileOn(expr, program, cs, bs);
+	    EMITio(iSETGVAR, symbol);
+	    return;
+	}
+
+	case Cast: {
+	    assert(!"unimplemented");
+	    return;
+	}
+
+# define LABEL(NAME)	int NAME = get(program, List,size)
+# define PATCH(J, L)    List_set(program, J+1, newInteger(L))
+
+	case While: {
+	    oop continues = newList();
+	    oop breaks    = newList();
+	    oop cond = get(exp, While,condition);
+	    oop body = get(exp, While,expression);
+	    EMITio(iPUSH, nil);
+	    LABEL(L1);
+	    compileOn(cond, program, cs, bs); // break/continue apply to enclosing loop
+	    LABEL(J1);
+	    EMITio(iJMPF, nil);
+	    EMITi(iPOP);
+	    compileOn(body, program, continues, breaks);
+	    EMITii(iJMP, L1);
+	    LABEL(L2);
+	    PATCH(J1, L2);
+	    for (int i = get(continues, List,size);  i--;)
+		PATCH(_integerValue(get(continues, List,elements)[i]), L1);
+	    for (int i = get(breaks, List,size);  i--;)
+		PATCH(_integerValue(get(breaks, List,elements)[i]), L2);
+	    return;
+	}
+	case For: {
+	    assert(!"unimplemented");
+	    return;
+	}
+	case If: {
+	    oop cond   = get(exp, If,condition);
+	    oop conseq = get(exp, If,consequent);
+	    oop altern = get(exp, If,alternate);
+	    compileOn(cond, program, cs, bs);
+	    LABEL(J1);
+	    EMITio(iJMPF, nil); // L1
+	    compileOn(conseq, program, cs, bs);
+	    LABEL(J2);
+	    EMITio(iJMP, nil); // L2
+	    LABEL(L1);
+	    compileOn(altern, program, cs, bs);
+	    LABEL(L2);
+	    PATCH(J1, L1);
+	    PATCH(J2, L2);
+	    return;
+	}
+	case Return:	assert(!"unimplemented");
+	case Continue: {
+	    if (nil == cs) fatal("continue outside loop");
+	    EMITio(iPUSH, nil);
+	    LABEL(L1);
+	    EMITio(iJMP, nil);
+	    List_append(cs, newInteger(L1));
+	    return;
+	}
+	case Break: {
+	    if (nil == bs) fatal("break outside loop");
+	    EMITio(iPUSH, nil);
+	    LABEL(L1);
+	    EMITio(iJMP, nil);
+	    List_append(bs, newInteger(L1));
+	    return;
+	}
+	case Tvoid:	assert(!"unimplemented");    	return;
+	case Tchar:	assert(!"unimplemented");    	return;
+	case Tshort:	assert(!"unimplemented");    	return;
+	case Tint:	assert(!"unimplemented");    	return;
+	case Tlong:	assert(!"unimplemented");    	return;
+	case Tfloat:	assert(!"unimplemented");    	return;
+	case Tdouble:	assert(!"unimplemented");    	return;
+	case Tpointer:	assert(!"unimplemented");    	return;
+	case Tarray:	assert(!"unimplemented");    	return;
+	case Tstruct:	assert(!"unimplemented");    	return;
+	case Tfunction:	assert(!"unimplemented");    	return;
+	case Tetc:	assert(!"unimplemented");    	return;
+	case VarDecls:	assert(!"unimplemented");    	return;
+	case TypeDecls:	assert(!"unimplemented");    	return;
+	case Scope:	assert(!"this cannot happen");	return;
+	case TypeName:	assert(!"unimplemented");    	return;
+	case Variable:	assert(!"unimplemented");    	return;
+	case Constant:	assert(!"unimplemented");    	return;
+	case Function: {
+	    assert(0 == get(exp, Function,code));
+	    oop prog2 = compileFunction(get(exp, Function,body));
+	    set(exp, Function,code, get(prog2, List,elements));
+	    EMITio(iCLOSE, exp);
+	    return;
+	}
+    }
+}
+
+oop compileFunction(oop exp)
+{
+    oop program = newList();
+    compileOn(exp, program, nil, nil);
+    EMITi(iRETURN);
+    if (opt_v > 2) disassemble(program);
+    return program;
+}
+
+oop compile(oop exp) // 6*7
+{
+    oop program = newList();
+    compileOn(exp, program, nil, nil);
+    EMITi(iHALT);
+    if (opt_v > 2) disassemble(program);
+    return program;
+}
+
+void replFile(char *name, FILE *file)
+{
+    input = pushInput(name, file);
+
+    while (input) {
+	if (yyparse() && yysval) {
+	    if (opt_v > 1) println(yysval);
+	    if (!opt_x) {
+		oop result = nil;
+		if (opt_O) {
+		    oop program = compile(yysval);
+		    result = execute(program);
+		}
+		else {
+		    switch (nlrPush()) {
+			case NLR_INIT:     break;
+			case NLR_RETURN:   fatal("return outside function");
+			case NLR_CONTINUE: fatal("continue outside loop");
+			case NLR_BREAK:    fatal("break outside loop");
+		    }
+		    if (opt_v > 1) printf("---------------- typecheck\n");
+		    assert(1 == List_size(scopes));
+		    typeCheck(yysval, nil);
+		    assert(1 == List_size(scopes));
+		    if (opt_v > 1) printf("---------------- declare\n");
+		    result = preval(yysval);
+		    assert(1 == List_size(scopes));
+		    nlrPop();
+		}
+		if (opt_v > 0) {
+		    printf("=> %s\n", toString(result));
+		}
+	    }
+	}
+    }
+}
+
+void replPath(char *path)
+{
+    FILE *file = fopen(path, "r");
+    if (!file) fatal("%s: %s", path, strerror(errno));
+    replFile(path, file);
+}
+
+int main(int argc, char **argv)
+{
+    setbuf(stdout, 0);
+
+    false    = newInteger(0);
+    true     = newInteger(1);
+    s_etc    = newSymbol("...");
+    heap     = newList();
+
+# define _(X) s_##X = intern(#X);
+    _do_primitives(_);
+# undef _
+
+    t_void   = newTvoid();
+    t_char   = newTchar();
+    t_short  = newTshort();
+    t_int    = newTint();
+    t_long   = newTlong();
+    t_float  = newTfloat();
+    t_double = newTdouble();
+    t_pvoid  = newTpointer(t_void);
+    t_pchar  = newTpointer(t_char);
+    t_ppchar = newTpointer(t_pchar);
+    t_etc    = newTetc();
+
+    tags   = newList();  // struct/union/enum tags
+    scopes = newList();  // lexically nested variable scopes
+
+    Scope_begin(); // the global scope
+
+    int argn  = 1;
+
+    while (argn < argc) {
+	char *arg = argv[argn];
+	if (*arg != '-') break;
+	++argn;
+	while (*++arg) {
+	    switch (*arg) {
+		case 'O':	++opt_O;  continue;
+		case 'v':	++opt_v;  continue;
+		case 'x':	++opt_x;  continue;
+		default:	fatal("uknown option '%c'", *arg);
+	    }
+	}
+    }
+
+    oop args  = newList();
+    if (argn == argc) fatal("no program file specified");
+
+    char *program = argv[argn++];
+    replPath(program);
+    List_append(args, newStringWith(program));
+
+    while (argn < argc)
+	List_append(args, newStringWith(argv[argn++]));
+
+    int cargs = List_size(args);
+    int vsize = sizeof(char *) * cargs;
+    oop vargs = newArray(newTarray(t_pchar, newInteger(cargs)),
+			 newMemory(malloc(vsize), vsize, 0),
+			 cargs);
+    List_do(args, arg) {
+	char *elts = String_cString(arg);
+	oop   mem  = newMemory(elts, get(arg, String,size), 0);
+	setArray(vargs, do_index, newPointer(t_pchar, mem, 0));
+    }
+
+    args = newList();
+    List_append(args, newInteger(cargs));
+    List_append(args, vargs);
+    List_append(args, newPointer(t_ppchar, newMemory(0, 0, 0), 0));
+
+    oop entry = Scope_lookup(intern("main"));
+    if (!entry || isNil(entry)) fatal("main is not defined");
+    if (!is(Function, entry))	fatal("main is not a function");
+
+    oop params = get(get(entry, Function,type), Tfunction, parameters);
+    switch (List_size(params)) {
+	default:
+	    fatal("main has too many parameters");
+	case 3:
+	    if (List_get(params, 2) != t_ppchar)
+		fatal("third parameter of main should be 'char **'");
+	case 2:
+	    if (List_get(params, 1) != t_ppchar)
+		fatal("second parameter of main should be 'char **'");
+	case 1:
+	    if (List_get(params, 0) != t_int)
+		fatal("first parameter of main should be 'int'");
+	case 0:
+	    break;
+    }
+
+    set(entry, Function,variadic, 1);
+
+    if (opt_v > 1) printf("---------------- execute\n");
+    oop result = apply(entry, args, nil);
+
+    if (!is(Integer, result)) {
+	printf("\n=> ");
+	println(result);
+	fatal("main did not return an integer");
+    }
+
+    assert(1 == List_size(scopes));
+	//printf("tugi list_do!\n");
+    List_do(heap, mem) {
+      if (!get(mem, Memory,free))
+	printf("allocated memory not freed at end of program: %s\n", toString(mem));
+    }
+
+    return _integerValue(result);
+}

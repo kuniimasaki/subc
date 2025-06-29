@@ -1,0 +1,505 @@
+=== Valgrind Execution Results ===
+
+--------- dangling-pointer-2
+==2143== Memcheck, a memory error detector
+==2143== Copyright (C) 2002-2022, and GNU GPL'd, by Julian Seward et al.
+==2143== Using Valgrind-3.22.0 and LibVEX; rerun with -h for copyright info
+==2143== Command: ./dangling-pointer-2
+==2143== 
+==2143== Invalid read of size 4
+==2143==    at 0x109228: main (in /mnt/c/Users/matya/OneDrive - 学校法人　永守学園/大学院/SLVM/git/subc/demofiles/dangling-pointer-2)
+==2143==  Address 0x4a77040 is 0 bytes inside a block of size 4 free'd
+==2143==    at 0x484988F: free (in /usr/libexec/valgrind/vgpreload_memcheck-amd64-linux.so)
+==2143==    by 0x109223: main (in /mnt/c/Users/matya/OneDrive - 学校法人　永守学園/大学院/SLVM/git/subc/demofiles/dangling-pointer-2)
+==2143==  Block was alloc'd at
+==2143==    at 0x4846828: malloc (in /usr/libexec/valgrind/vgpreload_memcheck-amd64-linux.so)
+==2143==    by 0x1091BE: main (in /mnt/c/Users/matya/OneDrive - 学校法人　永守学園/大学院/SLVM/git/subc/demofiles/dangling-pointer-2)
+==2143== 
+42
+42
+==2143== 
+==2143== HEAP SUMMARY:
+==2143==     in use at exit: 0 bytes in 0 blocks
+==2143==   total heap usage: 2 allocs, 2 frees, 4,100 bytes allocated
+==2143== 
+==2143== All heap blocks were freed -- no leaks are possible
+==2143== 
+==2143== For lists of detected and suppressed errors, rerun with: -s
+==2143== ERROR SUMMARY: 1 errors from 1 contexts (suppressed: 0 from 0)
+
+
+--------- dangling-pointer
+==2152== Memcheck, a memory error detector
+==2152== Copyright (C) 2002-2022, and GNU GPL'd, by Julian Seward et al.
+==2152== Using Valgrind-3.22.0 and LibVEX; rerun with -h for copyright info
+==2152== Command: ./dangling-pointer
+==2152== 
+dangling-pointer: dangling-pointer.c:13: main: Assertion `ptr != 0' failed.
+==2152== 
+==2152== Process terminating with default action of signal 6 (SIGABRT)
+==2152==    at 0x4900B2C: __pthread_kill_implementation (pthread_kill.c:44)
+==2152==    by 0x4900B2C: __pthread_kill_internal (pthread_kill.c:78)
+==2152==    by 0x4900B2C: pthread_kill@@GLIBC_2.34 (pthread_kill.c:89)
+==2152==    by 0x48A727D: raise (raise.c:26)
+==2152==    by 0x488A8FE: abort (abort.c:79)
+==2152==    by 0x488A81A: __assert_fail_base.cold (assert.c:96)
+==2152==    by 0x489D516: __assert_fail (assert.c:105)
+==2152==    by 0x109207: main (in /mnt/c/Users/matya/OneDrive - 学校法人　永守学園/大学院/SLVM/git/subc/demofiles/dangling-pointer)
+==2152== 
+==2152== HEAP SUMMARY:
+==2152==     in use at exit: 0 bytes in 0 blocks
+==2152==   total heap usage: 5 allocs, 5 frees, 1,933 bytes allocated
+==2152== 
+==2152== All heap blocks were freed -- no leaks are possible
+==2152== 
+==2152== For lists of detected and suppressed errors, rerun with: -s
+==2152== ERROR SUMMARY: 0 errors from 0 contexts (suppressed: 0 from 0)
+
+
+--------- invalid-free
+==2158== Memcheck, a memory error detector
+==2158== Copyright (C) 2002-2022, and GNU GPL'd, by Julian Seward et al.
+==2158== Using Valgrind-3.22.0 and LibVEX; rerun with -h for copyright info
+==2158== Command: ./invalid-free
+==2158== 
+==2158== 
+==2158== HEAP SUMMARY:
+==2158==     in use at exit: 0 bytes in 0 blocks
+==2158==   total heap usage: 0 allocs, 0 frees, 0 bytes allocated
+==2158== 
+==2158== All heap blocks were freed -- no leaks are possible
+==2158== 
+==2158== For lists of detected and suppressed errors, rerun with: -s
+==2158== ERROR SUMMARY: 0 errors from 0 contexts (suppressed: 0 from 0)
+
+
+--------- invalid-pointer
+==2164== Memcheck, a memory error detector
+==2164== Copyright (C) 2002-2022, and GNU GPL'd, by Julian Seward et al.
+==2164== Using Valgrind-3.22.0 and LibVEX; rerun with -h for copyright info
+==2164== Command: ./invalid-pointer
+==2164== 
+==2164== Invalid write of size 4
+==2164==    at 0x1091F5: main (in /mnt/c/Users/matya/OneDrive - 学校法人　永守学園/大学院/SLVM/git/subc/demofiles/invalid-pointer)
+==2164==  Address 0xdeadd0d0 is not stack'd, malloc'd or (recently) free'd
+==2164== 
+==2164== 
+==2164== Process terminating with default action of signal 11 (SIGSEGV)
+==2164==  Access not within mapped region at address 0xDEADD0D0
+==2164==    at 0x1091F5: main (in /mnt/c/Users/matya/OneDrive - 学校法人　永守学園/大学院/SLVM/git/subc/demofiles/invalid-pointer)
+==2164==  If you believe this happened as a result of a stack
+==2164==  overflow in your program's main thread (unlikely but
+==2164==  possible), you can try to increase the size of the
+==2164==  main thread stack using the --main-stacksize= flag.
+==2164==  The main thread stack size used in this run was 8388608.
+==2164== 
+==2164== HEAP SUMMARY:
+==2164==     in use at exit: 4,096 bytes in 1 blocks
+==2164==   total heap usage: 1 allocs, 0 frees, 4,096 bytes allocated
+==2164== 
+==2164== 4,096 bytes in 1 blocks are still reachable in loss record 1 of 1
+==2164==    at 0x4846828: malloc (in /usr/libexec/valgrind/vgpreload_memcheck-amd64-linux.so)
+==2164==    by 0x48E71B4: _IO_file_doallocate (filedoalloc.c:101)
+==2164==    by 0x48F7523: _IO_doallocbuf (genops.c:347)
+==2164==    by 0x48F4F8F: _IO_file_overflow@@GLIBC_2.2.5 (fileops.c:745)
+==2164==    by 0x48F5AAE: _IO_new_file_xsputn (fileops.c:1244)
+==2164==    by 0x48F5AAE: _IO_file_xsputn@@GLIBC_2.2.5 (fileops.c:1197)
+==2164==    by 0x48C2CC8: __printf_buffer_flush_to_file (printf_buffer_to_file.c:59)
+==2164==    by 0x48C2CC8: __printf_buffer_to_file_done (printf_buffer_to_file.c:120)
+==2164==    by 0x48CD742: __vfprintf_internal (vfprintf-internal.c:1545)
+==2164==    by 0x48C21B2: printf (printf.c:33)
+==2164==    by 0x1091A6: main (in /mnt/c/Users/matya/OneDrive - 学校法人　永守学園/大学院/SLVM/git/subc/demofiles/invalid-pointer)
+==2164== 
+==2164== LEAK SUMMARY:
+==2164==    definitely lost: 0 bytes in 0 blocks
+==2164==    indirectly lost: 0 bytes in 0 blocks
+==2164==      possibly lost: 0 bytes in 0 blocks
+==2164==    still reachable: 4,096 bytes in 1 blocks
+==2164==         suppressed: 0 bytes in 0 blocks
+==2164== 
+==2164== For lists of detected and suppressed errors, rerun with: -s
+==2164== ERROR SUMMARY: 1 errors from 1 contexts (suppressed: 0 from 0)
+
+
+--------- memory-leak
+==2170== Memcheck, a memory error detector
+==2170== Copyright (C) 2002-2022, and GNU GPL'd, by Julian Seward et al.
+==2170== Using Valgrind-3.22.0 and LibVEX; rerun with -h for copyright info
+==2170== Command: ./memory-leak
+==2170== 
+0x4a77040
+0x4a780d0
+0x4a78120
+0x4a78170
+0x4a781c0
+0x4a78210
+0x4a78260
+0x4a782b0
+0x4a78300
+0x4a78350
+==2170== 
+==2170== HEAP SUMMARY:
+==2170==     in use at exit: 40 bytes in 10 blocks
+==2170==   total heap usage: 11 allocs, 1 frees, 4,136 bytes allocated
+==2170== 
+==2170== 40 bytes in 10 blocks are definitely lost in loss record 1 of 1
+==2170==    at 0x4846828: malloc (in /usr/libexec/valgrind/vgpreload_memcheck-amd64-linux.so)
+==2170==    by 0x1091A7: main (in /mnt/c/Users/matya/OneDrive - 学校法人　永守学園/大学院/SLVM/git/subc/demofiles/memory-leak)
+==2170== 
+==2170== LEAK SUMMARY:
+==2170==    definitely lost: 40 bytes in 10 blocks
+==2170==    indirectly lost: 0 bytes in 0 blocks
+==2170==      possibly lost: 0 bytes in 0 blocks
+==2170==    still reachable: 0 bytes in 0 blocks
+==2170==         suppressed: 0 bytes in 0 blocks
+==2170== 
+==2170== For lists of detected and suppressed errors, rerun with: -s
+==2170== ERROR SUMMARY: 1 errors from 1 contexts (suppressed: 0 from 0)
+
+
+--------- multiple-free
+==2176== Memcheck, a memory error detector
+==2176== Copyright (C) 2002-2022, and GNU GPL'd, by Julian Seward et al.
+==2176== Using Valgrind-3.22.0 and LibVEX; rerun with -h for copyright info
+==2176== Command: ./multiple-free
+==2176== 
+==2176== Invalid free() / delete / delete[] / realloc()
+==2176==    at 0x484988F: free (in /usr/libexec/valgrind/vgpreload_memcheck-amd64-linux.so)
+==2176==    by 0x109224: main (in /mnt/c/Users/matya/OneDrive - 学校法人　永守学園/大学院/SLVM/git/subc/demofiles/multiple-free)
+==2176==  Address 0x4a77040 is 0 bytes inside a block of size 4 free'd
+==2176==    at 0x484988F: free (in /usr/libexec/valgrind/vgpreload_memcheck-amd64-linux.so)
+==2176==    by 0x1091FD: main (in /mnt/c/Users/matya/OneDrive - 学校法人　永守学園/大学院/SLVM/git/subc/demofiles/multiple-free)
+==2176==  Block was alloc'd at
+==2176==    at 0x4846828: malloc (in /usr/libexec/valgrind/vgpreload_memcheck-amd64-linux.so)
+==2176==    by 0x1091BE: main (in /mnt/c/Users/matya/OneDrive - 学校法人　永守学園/大学院/SLVM/git/subc/demofiles/multiple-free)
+==2176== 
+0x4a77040
+0x4a77040
+==2176== 
+==2176== HEAP SUMMARY:
+==2176==     in use at exit: 0 bytes in 0 blocks
+==2176==   total heap usage: 2 allocs, 3 frees, 4,100 bytes allocated
+==2176== 
+==2176== All heap blocks were freed -- no leaks are possible
+==2176== 
+==2176== For lists of detected and suppressed errors, rerun with: -s
+==2176== ERROR SUMMARY: 1 errors from 1 contexts (suppressed: 0 from 0)
+
+
+--------- null-pointer
+==2182== Memcheck, a memory error detector
+==2182== Copyright (C) 2002-2022, and GNU GPL'd, by Julian Seward et al.
+==2182== Using Valgrind-3.22.0 and LibVEX; rerun with -h for copyright info
+==2182== Command: ./null-pointer
+==2182== 
+==2182== Invalid read of size 1
+==2182==    at 0x484F226: strlen (in /usr/libexec/valgrind/vgpreload_memcheck-amd64-linux.so)
+==2182==    by 0x48E9BFC: puts (ioputs.c:35)
+==2182==    by 0x109168: main (in /mnt/c/Users/matya/OneDrive - 学校法人　永守学園/大学院/SLVM/git/subc/demofiles/null-pointer)
+==2182==  Address 0x0 is not stack'd, malloc'd or (recently) free'd
+==2182== 
+==2182== 
+==2182== Process terminating with default action of signal 11 (SIGSEGV)
+==2182==  Access not within mapped region at address 0x0
+==2182==    at 0x484F226: strlen (in /usr/libexec/valgrind/vgpreload_memcheck-amd64-linux.so)
+==2182==    by 0x48E9BFC: puts (ioputs.c:35)
+==2182==    by 0x109168: main (in /mnt/c/Users/matya/OneDrive - 学校法人　永守学園/大学院/SLVM/git/subc/demofiles/null-pointer)
+==2182==  If you believe this happened as a result of a stack
+==2182==  overflow in your program's main thread (unlikely but
+==2182==  possible), you can try to increase the size of the
+==2182==  main thread stack using the --main-stacksize= flag.
+==2182==  The main thread stack size used in this run was 8388608.
+==2182== 
+==2182== HEAP SUMMARY:
+==2182==     in use at exit: 0 bytes in 0 blocks
+==2182==   total heap usage: 0 allocs, 0 frees, 0 bytes allocated
+==2182== 
+==2182== All heap blocks were freed -- no leaks are possible
+==2182== 
+==2182== For lists of detected and suppressed errors, rerun with: -s
+==2182== ERROR SUMMARY: 1 errors from 1 contexts (suppressed: 0 from 0)
+
+
+--------- out-of-bounds-access-2
+==2188== Memcheck, a memory error detector
+==2188== Copyright (C) 2002-2022, and GNU GPL'd, by Julian Seward et al.
+==2188== Using Valgrind-3.22.0 and LibVEX; rerun with -h for copyright info
+==2188== Command: ./out-of-bounds-access-2
+==2188== 
+42
+42
+0
+0
+==2188== 
+==2188== HEAP SUMMARY:
+==2188==     in use at exit: 0 bytes in 0 blocks
+==2188==   total heap usage: 1 allocs, 1 frees, 4,096 bytes allocated
+==2188== 
+==2188== All heap blocks were freed -- no leaks are possible
+==2188== 
+==2188== For lists of detected and suppressed errors, rerun with: -s
+==2188== ERROR SUMMARY: 0 errors from 0 contexts (suppressed: 0 from 0)
+
+
+--------- out-of-bounds-access
+==2194== Memcheck, a memory error detector
+==2194== Copyright (C) 2002-2022, and GNU GPL'd, by Julian Seward et al.
+==2194== Using Valgrind-3.22.0 and LibVEX; rerun with -h for copyright info
+==2194== Command: ./out-of-bounds-access
+==2194== 
+==2194== Conditional jump or move depends on uninitialised value(s)
+==2194==    at 0x48CC0CB: __printf_buffer (vfprintf-process-arg.c:58)
+==2194==    by 0x48CD73A: __vfprintf_internal (vfprintf-internal.c:1544)
+==2194==    by 0x48C21B2: printf (printf.c:33)
+==2194==    by 0x1091F7: main (in /mnt/c/Users/matya/OneDrive - 学校法人　永守学園/大学院/SLVM/git/subc/demofiles/out-of-bounds-access)
+==2194== 
+==2194== Use of uninitialised value of size 8
+==2194==    at 0x48C10BB: _itoa_word (_itoa.c:183)
+==2194==    by 0x48CBC9B: __printf_buffer (vfprintf-process-arg.c:155)
+==2194==    by 0x48CD73A: __vfprintf_internal (vfprintf-internal.c:1544)
+==2194==    by 0x48C21B2: printf (printf.c:33)
+==2194==    by 0x1091F7: main (in /mnt/c/Users/matya/OneDrive - 学校法人　永守学園/大学院/SLVM/git/subc/demofiles/out-of-bounds-access)
+==2194== 
+==2194== Conditional jump or move depends on uninitialised value(s)
+==2194==    at 0x48C10CC: _itoa_word (_itoa.c:183)
+==2194==    by 0x48CBC9B: __printf_buffer (vfprintf-process-arg.c:155)
+==2194==    by 0x48CD73A: __vfprintf_internal (vfprintf-internal.c:1544)
+==2194==    by 0x48C21B2: printf (printf.c:33)
+==2194==    by 0x1091F7: main (in /mnt/c/Users/matya/OneDrive - 学校法人　永守学園/大学院/SLVM/git/subc/demofiles/out-of-bounds-access)
+==2194== 
+==2194== Conditional jump or move depends on uninitialised value(s)
+==2194==    at 0x48CBD89: __printf_buffer (vfprintf-process-arg.c:186)
+==2194==    by 0x48CD73A: __vfprintf_internal (vfprintf-internal.c:1544)
+==2194==    by 0x48C21B2: printf (printf.c:33)
+==2194==    by 0x1091F7: main (in /mnt/c/Users/matya/OneDrive - 学校法人　永守学園/大学院/SLVM/git/subc/demofiles/out-of-bounds-access)
+==2194== 
+4
+31
+==2194== 
+==2194== HEAP SUMMARY:
+==2194==     in use at exit: 0 bytes in 0 blocks
+==2194==   total heap usage: 1 allocs, 1 frees, 4,096 bytes allocated
+==2194== 
+==2194== All heap blocks were freed -- no leaks are possible
+==2194== 
+==2194== Use --track-origins=yes to see where uninitialised values come from
+==2194== For lists of detected and suppressed errors, rerun with: -s
+==2194== ERROR SUMMARY: 6 errors from 4 contexts (suppressed: 0 from 0)
+
+
+--------- pointer-compare
+==2200== Memcheck, a memory error detector
+==2200== Copyright (C) 2002-2022, and GNU GPL'd, by Julian Seward et al.
+==2200== Using Valgrind-3.22.0 and LibVEX; rerun with -h for copyright info
+==2200== Command: ./pointer-compare
+==2200== 
+pointer-compare: pointer-compare.c:17: main: Assertion `!"this should not be reached"' failed.
+==2200== 
+==2200== Process terminating with default action of signal 6 (SIGABRT)
+==2200==    at 0x4900B2C: __pthread_kill_implementation (pthread_kill.c:44)
+==2200==    by 0x4900B2C: __pthread_kill_internal (pthread_kill.c:78)
+==2200==    by 0x4900B2C: pthread_kill@@GLIBC_2.34 (pthread_kill.c:89)
+==2200==    by 0x48A727D: raise (raise.c:26)
+==2200==    by 0x488A8FE: abort (abort.c:79)
+==2200==    by 0x488A81A: __assert_fail_base.cold (assert.c:96)
+==2200==    by 0x489D516: __assert_fail (assert.c:105)
+==2200==    by 0x109269: main (in /mnt/c/Users/matya/OneDrive - 学校法人　永守学園/大学院/SLVM/git/subc/demofiles/pointer-compare)
+==2200== 
+==2200== HEAP SUMMARY:
+==2200==     in use at exit: 4,096 bytes in 1 blocks
+==2200==   total heap usage: 6 allocs, 5 frees, 6,048 bytes allocated
+==2200== 
+==2200== 4,096 bytes in 1 blocks are still reachable in loss record 1 of 1
+==2200==    at 0x4846828: malloc (in /usr/libexec/valgrind/vgpreload_memcheck-amd64-linux.so)
+==2200==    by 0x48E71B4: _IO_file_doallocate (filedoalloc.c:101)
+==2200==    by 0x48F7523: _IO_doallocbuf (genops.c:347)
+==2200==    by 0x48F4F8F: _IO_file_overflow@@GLIBC_2.2.5 (fileops.c:745)
+==2200==    by 0x48F5AAE: _IO_new_file_xsputn (fileops.c:1244)
+==2200==    by 0x48F5AAE: _IO_file_xsputn@@GLIBC_2.2.5 (fileops.c:1197)
+==2200==    by 0x48E9C5C: puts (ioputs.c:40)
+==2200==    by 0x109217: main (in /mnt/c/Users/matya/OneDrive - 学校法人　永守学園/大学院/SLVM/git/subc/demofiles/pointer-compare)
+==2200== 
+==2200== LEAK SUMMARY:
+==2200==    definitely lost: 0 bytes in 0 blocks
+==2200==    indirectly lost: 0 bytes in 0 blocks
+==2200==      possibly lost: 0 bytes in 0 blocks
+==2200==    still reachable: 4,096 bytes in 1 blocks
+==2200==         suppressed: 0 bytes in 0 blocks
+==2200== 
+==2200== For lists of detected and suppressed errors, rerun with: -s
+==2200== ERROR SUMMARY: 0 errors from 0 contexts (suppressed: 0 from 0)
+
+
+--------- pointer-increment
+==2206== Memcheck, a memory error detector
+==2206== Copyright (C) 2002-2022, and GNU GPL'd, by Julian Seward et al.
+==2206== Using Valgrind-3.22.0 and LibVEX; rerun with -h for copyright info
+==2206== Command: ./pointer-increment
+==2206== 
+0x1ffefffe64
+0x1ffefffe68
+==2206== 
+==2206== HEAP SUMMARY:
+==2206==     in use at exit: 0 bytes in 0 blocks
+==2206==   total heap usage: 1 allocs, 1 frees, 4,096 bytes allocated
+==2206== 
+==2206== All heap blocks were freed -- no leaks are possible
+==2206== 
+==2206== For lists of detected and suppressed errors, rerun with: -s
+==2206== ERROR SUMMARY: 0 errors from 0 contexts (suppressed: 0 from 0)
+
+
+--------- pointer-out-of-bounds-2
+==2212== Memcheck, a memory error detector
+==2212== Copyright (C) 2002-2022, and GNU GPL'd, by Julian Seward et al.
+==2212== Using Valgrind-3.22.0 and LibVEX; rerun with -h for copyright info
+==2212== Command: ./pointer-out-of-bounds-2
+==2212== 
+==2212== 
+==2212== HEAP SUMMARY:
+==2212==     in use at exit: 0 bytes in 0 blocks
+==2212==   total heap usage: 0 allocs, 0 frees, 0 bytes allocated
+==2212== 
+==2212== All heap blocks were freed -- no leaks are possible
+==2212== 
+==2212== For lists of detected and suppressed errors, rerun with: -s
+==2212== ERROR SUMMARY: 0 errors from 0 contexts (suppressed: 0 from 0)
+
+
+--------- pointer-out-of-bounds
+==2218== Memcheck, a memory error detector
+==2218== Copyright (C) 2002-2022, and GNU GPL'd, by Julian Seward et al.
+==2218== Using Valgrind-3.22.0 and LibVEX; rerun with -h for copyright info
+==2218== Command: ./pointer-out-of-bounds
+==2218== 
+==2218== 
+==2218== HEAP SUMMARY:
+==2218==     in use at exit: 0 bytes in 0 blocks
+==2218==   total heap usage: 0 allocs, 0 frees, 0 bytes allocated
+==2218== 
+==2218== All heap blocks were freed -- no leaks are possible
+==2218== 
+==2218== For lists of detected and suppressed errors, rerun with: -s
+==2218== ERROR SUMMARY: 0 errors from 0 contexts (suppressed: 0 from 0)
+
+
+--------- segmentation-fault
+==2224== Memcheck, a memory error detector
+==2224== Copyright (C) 2002-2022, and GNU GPL'd, by Julian Seward et al.
+==2224== Using Valgrind-3.22.0 and LibVEX; rerun with -h for copyright info
+==2224== Command: ./segmentation-fault
+==2224== 
+==2224== Invalid write of size 4
+==2224==    at 0x10913D: main (in /mnt/c/Users/matya/OneDrive - 学校法人　永守学園/大学院/SLVM/git/subc/demofiles/segmentation-fault)
+==2224==  Address 0x0 is not stack'd, malloc'd or (recently) free'd
+==2224== 
+==2224== 
+==2224== Process terminating with default action of signal 11 (SIGSEGV)
+==2224==  Access not within mapped region at address 0x0
+==2224==    at 0x10913D: main (in /mnt/c/Users/matya/OneDrive - 学校法人　永守学園/大学院/SLVM/git/subc/demofiles/segmentation-fault)
+==2224==  If you believe this happened as a result of a stack
+==2224==  overflow in your program's main thread (unlikely but
+==2224==  possible), you can try to increase the size of the
+==2224==  main thread stack using the --main-stacksize= flag.
+==2224==  The main thread stack size used in this run was 8388608.
+==2224== 
+==2224== HEAP SUMMARY:
+==2224==     in use at exit: 0 bytes in 0 blocks
+==2224==   total heap usage: 0 allocs, 0 frees, 0 bytes allocated
+==2224== 
+==2224== All heap blocks were freed -- no leaks are possible
+==2224== 
+==2224== For lists of detected and suppressed errors, rerun with: -s
+==2224== ERROR SUMMARY: 1 errors from 1 contexts (suppressed: 0 from 0)
+
+
+--------- uninitialised
+==2230== Memcheck, a memory error detector
+==2230== Copyright (C) 2002-2022, and GNU GPL'd, by Julian Seward et al.
+==2230== Using Valgrind-3.22.0 and LibVEX; rerun with -h for copyright info
+==2230== Command: ./uninitialised
+==2230== 
+==2230== 
+==2230== HEAP SUMMARY:
+==2230==     in use at exit: 0 bytes in 0 blocks
+==2230==   total heap usage: 0 allocs, 0 frees, 0 bytes allocated
+==2230== 
+==2230== All heap blocks were freed -- no leaks are possible
+==2230== 
+==2230== For lists of detected and suppressed errors, rerun with: -s
+==2230== ERROR SUMMARY: 0 errors from 0 contexts (suppressed: 0 from 0)
+
+
+--------- use-after-free-2
+==2236== Memcheck, a memory error detector
+==2236== Copyright (C) 2002-2022, and GNU GPL'd, by Julian Seward et al.
+==2236== Using Valgrind-3.22.0 and LibVEX; rerun with -h for copyright info
+==2236== Command: ./use-after-free-2
+==2236== 
+==2236== Invalid read of size 8
+==2236==    at 0x109257: main (in /mnt/c/Users/matya/OneDrive - 学校法人　永守学園/大学院/SLVM/git/subc/demofiles/use-after-free-2)
+==2236==  Address 0x4a77318 is 8 bytes inside a block of size 16 free'd
+==2236==    at 0x484988F: free (in /usr/libexec/valgrind/vgpreload_memcheck-amd64-linux.so)
+==2236==    by 0x109252: main (in /mnt/c/Users/matya/OneDrive - 学校法人　永守学園/大学院/SLVM/git/subc/demofiles/use-after-free-2)
+==2236==  Block was alloc'd at
+==2236==    at 0x4846828: malloc (in /usr/libexec/valgrind/vgpreload_memcheck-amd64-linux.so)
+==2236==    by 0x1091A5: newLink (in /mnt/c/Users/matya/OneDrive - 学校法人　永守学園/大学院/SLVM/git/subc/demofiles/use-after-free-2)
+==2236==    by 0x1091F5: main (in /mnt/c/Users/matya/OneDrive - 学校法人　永守学園/大学院/SLVM/git/subc/demofiles/use-after-free-2)
+==2236== 
+81
+64
+49
+36
+25
+16
+9
+4
+1
+0
+==2236== 
+==2236== HEAP SUMMARY:
+==2236==     in use at exit: 0 bytes in 0 blocks
+==2236==   total heap usage: 11 allocs, 11 frees, 4,256 bytes allocated
+==2236== 
+==2236== All heap blocks were freed -- no leaks are possible
+==2236== 
+==2236== For lists of detected and suppressed errors, rerun with: -s
+==2236== ERROR SUMMARY: 10 errors from 1 contexts (suppressed: 0 from 0)
+
+
+--------- use-after-free
+==2242== Memcheck, a memory error detector
+==2242== Copyright (C) 2002-2022, and GNU GPL'd, by Julian Seward et al.
+==2242== Using Valgrind-3.22.0 and LibVEX; rerun with -h for copyright info
+==2242== Command: ./use-after-free
+==2242== 
+==2242== Invalid read of size 4
+==2242==    at 0x109228: main (in /mnt/c/Users/matya/OneDrive - 学校法人　永守学園/大学院/SLVM/git/subc/demofiles/use-after-free)
+==2242==  Address 0x4a77040 is 0 bytes inside a block of size 4 free'd
+==2242==    at 0x484988F: free (in /usr/libexec/valgrind/vgpreload_memcheck-amd64-linux.so)
+==2242==    by 0x109223: main (in /mnt/c/Users/matya/OneDrive - 学校法人　永守学園/大学院/SLVM/git/subc/demofiles/use-after-free)
+==2242==  Block was alloc'd at
+==2242==    at 0x4846828: malloc (in /usr/libexec/valgrind/vgpreload_memcheck-amd64-linux.so)
+==2242==    by 0x1091BE: main (in /mnt/c/Users/matya/OneDrive - 学校法人　永守学園/大学院/SLVM/git/subc/demofiles/use-after-free)
+==2242== 
+==2242== Invalid write of size 4
+==2242==    at 0x109244: main (in /mnt/c/Users/matya/OneDrive - 学校法人　永守学園/大学院/SLVM/git/subc/demofiles/use-after-free)
+==2242==  Address 0x4a77040 is 0 bytes inside a block of size 4 free'd
+==2242==    at 0x484988F: free (in /usr/libexec/valgrind/vgpreload_memcheck-amd64-linux.so)
+==2242==    by 0x109223: main (in /mnt/c/Users/matya/OneDrive - 学校法人　永守学園/大学院/SLVM/git/subc/demofiles/use-after-free)
+==2242==  Block was alloc'd at
+==2242==    at 0x4846828: malloc (in /usr/libexec/valgrind/vgpreload_memcheck-amd64-linux.so)
+==2242==    by 0x1091BE: main (in /mnt/c/Users/matya/OneDrive - 学校法人　永守学園/大学院/SLVM/git/subc/demofiles/use-after-free)
+==2242== 
+42
+42
+==2242== 
+==2242== HEAP SUMMARY:
+==2242==     in use at exit: 0 bytes in 0 blocks
+==2242==   total heap usage: 2 allocs, 2 frees, 4,100 bytes allocated
+==2242== 
+==2242== All heap blocks were freed -- no leaks are possible
+==2242== 
+==2242== For lists of detected and suppressed errors, rerun with: -s
+==2242== ERROR SUMMARY: 2 errors from 2 contexts (suppressed: 0 from 0)
+
