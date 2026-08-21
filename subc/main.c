@@ -4,7 +4,7 @@
 #include <stdlib.h>
 #include <string.h>
 #define YYRULECOUNT 119
-#line 5 "main.leg"
+#line 5 "/home/kikima/subc_check/stage_sm_main.leg"
 
 ;
 #include <stdio.h>
@@ -8261,7 +8261,7 @@ YY_PARSE(yycontext *) YYRELEASE(yycontext *yyctx)
 }
 
 #endif
-#line 2151 "main.leg"
+#line 2151 "/home/kikima/subc_check/stage_sm_main.leg"
 
 ;
 
@@ -9416,6 +9416,13 @@ oop setMemory(oop memory, int offset, oop type, oop value)
 		    switch (getType(base)) {
 			case Memory: {
 			    *(void **)addr = get(base, Memory,base);
+			    return value;
+			}
+			case Integer: {
+			    oop ptype  = get(value, Pointer,type);
+			    int scale  = typeSize(get(ptype, Tpointer,target));
+			    int poffset = get(value, Pointer,offset);
+			    *(void **)addr = (void *)(intptr_t)(_integerValue(base) + poffset * scale);
 			    return value;
 			}
 			default: break;

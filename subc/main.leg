@@ -3304,6 +3304,13 @@ oop setMemory(oop memory, int offset, oop type, oop value)
 			    *(void **)addr = get(base, Memory,base);
 			    return value;
 			}
+			case Integer: {
+			    oop ptype  = get(value, Pointer,type);
+			    int scale  = typeSize(get(ptype, Tpointer,target));
+			    int poffset = get(value, Pointer,offset);
+			    *(void **)addr = (void *)(intptr_t)(_integerValue(base) + poffset * scale);
+			    return value;
+			}
 			default: break;
 		    }
 		    println(base);
