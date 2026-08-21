@@ -3599,7 +3599,7 @@ int compare(oop a, oop b)
 		oop type   = get(a, Pointer,type);
 		int offset = get(a, Pointer,offset);
 		int scale  = typeSize(get(type, Tpointer,target));
-		return _integerValue(base) + offset * scale == _integerValue(b);
+		return CMP(_integerValue(base) + offset * scale, _integerValue(b));
 	    }
 	    return 0;
 	}

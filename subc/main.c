@@ -4,7 +4,7 @@
 #include <stdlib.h>
 #include <string.h>
 #define YYRULECOUNT 119
-#line 5 "/home/kikima/subc_check/stage2_main.leg"
+#line 5 "/home/kikima/subc_check/stage3_main.leg"
 
 ;
 #include <stdio.h>
@@ -8261,7 +8261,7 @@ YY_PARSE(yycontext *) YYRELEASE(yycontext *yyctx)
 }
 
 #endif
-#line 2151 "/home/kikima/subc_check/stage2_main.leg"
+#line 2151 "/home/kikima/subc_check/stage3_main.leg"
 
 ;
 
@@ -9713,7 +9713,7 @@ int compare(oop a, oop b)
 		oop type   = get(a, Pointer,type);
 		int offset = get(a, Pointer,offset);
 		int scale  = typeSize(get(type, Tpointer,target));
-		return _integerValue(base) + offset * scale == _integerValue(b);
+		return CMP(_integerValue(base) + offset * scale, _integerValue(b));
 	    }
 	    return 0;
 	}
