@@ -4,7 +4,7 @@
 #include <stdlib.h>
 #include <string.h>
 #define YYRULECOUNT 119
-#line 5 "/home/kikima/subc_check/stage1_main.leg"
+#line 5 "/home/kikima/subc_check/stage2_main.leg"
 
 ;
 #include <stdio.h>
@@ -8261,7 +8261,7 @@ YY_PARSE(yycontext *) YYRELEASE(yycontext *yyctx)
 }
 
 #endif
-#line 2151 "/home/kikima/subc_check/stage1_main.leg"
+#line 2151 "/home/kikima/subc_check/stage2_main.leg"
 
 ;
 
@@ -9435,6 +9435,27 @@ oop setMemory(oop memory, int offset, oop type, oop value)
     return 0;
 }
 
+oop setPointer(oop ptr, int delta, oop value)
+{
+  oop base   = get(ptr, Pointer,base);
+  int offset = get(ptr, Pointer,offset) + delta;
+  oop type   = get(get(ptr, Pointer,type), Tpointer,target);
+  switch (getType(base)) {
+    case Variable: {
+      if (offset != 0) fatal("pointer to variable no longer points to its variable: %s", toString(ptr));
+      return set(base, Variable,value, value);
+    }
+    case Memory: {
+      int scale = typeSize(type);
+      return setMemory(base, offset * scale, type, value);
+    }
+    default: break;
+  }
+  println(ptr);
+  fatal("cannot store '%s' through pointer", getTypeName(type));
+  return 0;
+}
+
 oop getArray(oop array, int index)
 {
     int size  = get(array, Array,size);
@@ -9537,7 +9558,8 @@ oop assign(oop lhs, oop rhs)
 	    int index = _integerValue(ondex);
 	    lhs = eval(get(lhs, Index,lhs));
 	    switch (getType(lhs)) {
-		case Array: return setArray(lhs, index, rhs);
+		case Array: 	return setArray(lhs, index, rhs);
+		case Pointer: 	return setPointer(lhs, index, rhs);
 		default: break;
 	    }
 	    break;
