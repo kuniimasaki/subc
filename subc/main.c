@@ -9001,7 +9001,8 @@ oop typeCheck(oop exp, oop fntype)
 	    return lhs;
 	}
 	case If: {
-	    if (t_int != typeCheck(get(exp, If,condition), fntype)) fatal("if condition is not 'int'");
+	    oop ifcond = typeCheck(get(exp, If,condition), fntype);
+	    if (t_int != ifcond && !is(Tpointer, ifcond)) fatal("if condition is not 'int' or '*'");
 	    typeCheck(get(exp, If,consequent), fntype);
 	    if (nil != get(exp, If,alternate))
 		typeCheck(get(exp, If,alternate), fntype);
@@ -9011,7 +9012,7 @@ oop typeCheck(oop exp, oop fntype)
 	    oop cond = get(exp, While,condition);
 	    oop body = get(exp, While,expression);
 	    cond = typeCheck(cond, fntype);
-	    if (t_int != cond) fatal("while condition is not 'int'");
+	    if (t_int != cond && !is(Tpointer, cond)) fatal("while condition is not 'int' or '*'");
 	    typeCheck(body, fntype);
 	    return nil;
 	}
