@@ -92,3 +92,23 @@ Task 1 changes and is not a regression. Likely cause (not confirmed): the
 `malloc()` call twice, registering two `Memory` blocks in the `heap` list while
 `free()` only marks one. Worth a dedicated look before relying on the
 leak-detector for grading/teaching purposes.
+
+> **Fixed (2026-08-21, commits `db54b89` / `11486ea`).** The actual root cause
+> was not `preval`/`eval` duplication but a missing `break;` in
+> `initialiseVariable()`'s `case Tpointer:` — confirmed with debug tracing
+> (added temporary `fprintf`s in `prim_malloc`/`prim_free`/`apply`/`eval(Block)`,
+> rebuilt in a scratch location, ran the minimal repro, then removed the
+> instrumentation before regenerating the real `main.c`). The fallthrough
+> caused every pointer-typed declaration-with-initializer to evaluate its
+> initializer twice, discarding the first (correctly cast) result — for
+> `malloc()` this orphaned the first allocation. Fixing it alone would have
+> newly exposed an `assert(0)` crash on `demofiles/use-after-free-2.c`
+> (storing a typed-NULL `Pointer` — one whose `.base` is an `Integer`, not a
+> `Memory` — into a struct field was unhandled in `setMemory()`), so that gap
+> was fixed first in a separate, structurally-inert-on-its-own commit
+> (`db54b89`) before the real fix (`11486ea`). See `CHANGELOG.md` for the
+> full before/after regression accounting, including two knock-on message
+> changes on `demofiles/memory-leak.c` (now reports 10 leaks, not 20) and
+> `demofiles/null-pointer.c` (now fails at the actual NULL-string read
+> instead of an incidental type-mismatch) that are consequences of the fix,
+> not regressions.
