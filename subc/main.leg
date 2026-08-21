@@ -121,7 +121,7 @@ struct Input 	   { type_t _type;  char *name;  int line;  FILE *file;  oop next;
 struct Token	   { type_t _type;  char *text;  char *file;  int line; };
 struct Integer 	   { type_t _type;  long value; };
 struct Float 	   { type_t _type;  double value; };
-struct Pointer 	   { type_t _type;  oop type, base;  int offset, isfree; };
+struct Pointer 	   { type_t _type;  oop type, base;  int offset; };
 struct Array 	   { type_t _type;  oop type, base;  int size; };
 struct Struct 	   { type_t _type;  oop type, memory; };
 struct Symbol  	   { type_t _type;  char *name; oop value; };
@@ -262,7 +262,6 @@ oop newPointer(oop type, oop base, int offset)
     obj->Pointer.type   = type;
     obj->Pointer.base   = base;
     obj->Pointer.offset = offset;
-	obj->Pointer.isfree = 0;
     return obj;
 }
 
@@ -677,6 +676,16 @@ oop newMemory(void *base, size_t size, int heap)
   obj->Memory.heap = heap;
   obj->Memory.free = 0;
   return obj;
+}
+
+// single source of truth for use-after-free detection: Memory.free is a
+// property of the shared memory block, so it is visible through every
+// alias (Pointer object) pointing at that block, unlike the old per-Pointer
+// isfree flag which never propagated to aliases.
+void requireNotFreed(oop base, char *action)
+{
+    if (is(Memory, base) && get(base, Memory,free))
+	fatal("%s freed memory was not allowed: %s", action, toString(base));
 }
 
 CTOR1(Reference,   target);
@@ -1437,7 +1446,7 @@ void printiln(oop obj, int indent)
 	case Integer:	    printf("%ld\n", integerValue(obj));		break;
 	case Float:	    printf("%f\n",  floatValue(obj));		break;
 	case Pointer: {
-		if(get(obj, Pointer, isfree))fatal("freed memory read");
+		requireNotFreed(get(obj, Pointer,base), "printing");
 	    printf("POINTER %s [%d]\n", toString(get(obj, Pointer,type)), get(obj, Pointer,offset));
 		printiln(get(obj, Pointer,base), indent+1);
 	    break;
@@ -2602,7 +2611,6 @@ oop prim_free(int argc, oop *argv, oop env) // array
   oop arg = argv[0];
   if (!is(Pointer,arg)) fatal("free: argument is not a pointer");
   oop base = get(arg, Pointer,base);
-  get(arg, Pointer, isfree) = -1;
   switch (getType(base)) {
     case Integer:	fatal("attempt to free arbitrary pointer %s", toString(arg));
     case Variable:	fatal("attempt to free pointer to variable %s", toString(arg));
@@ -3211,7 +3219,7 @@ oop getPointer(oop ptr, int delta)
       return get(base, Variable,value);
     }
     case Memory: {
-	  if(get(base,Memory, free))fatal("getting freed memory was not allowed: %s", toString(base));
+	  requireNotFreed(base, "getting");
       void *addr = get(base, Memory,base) + offset * scale;
       assert(addr < get(base, Memory,base) + get(base, Memory,size));
       switch (getType(type)) {
@@ -3269,6 +3277,7 @@ oop getMemory(oop memory, int offset, oop type)
 
 oop setMemory(oop memory, int offset, oop type, oop value)
 {
+    requireNotFreed(memory, "setting");
     int memsize = get(memory, Memory,size);
     int valsize = typeSize(type);
     if (offset           <      0) fatal("memory offset is negative");
@@ -3288,8 +3297,8 @@ oop setMemory(oop memory, int offset, oop type, oop value)
 		    return newPointer(type, value, 0);
 		}
 		case Pointer: {
-			if(get(value, Pointer, isfree))fatal("freed memory set");
 		    oop base = get(value, Pointer,base);
+		    requireNotFreed(base, "storing");
 		    switch (getType(base)) {
 			case Memory: {
 			    *(void **)addr = get(base, Memory,base);
@@ -3456,7 +3465,6 @@ oop assign(oop lhs, oop rhs)
 	    oop ptr = eval(get(lhs, Dereference,rhs));
 	    switch (getType(ptr)) {
 		case Pointer: { // &x
-			//if(get(ptr, Pointer, isfree))fatal("freed memory deref assign");
 		    oop base   = get(ptr, Pointer,base);
 		    int offset = get(ptr, Pointer,offset);
 		    oop type   = get(get(ptr, Pointer,type), Tpointer,target);
@@ -3473,6 +3481,7 @@ oop assign(oop lhs, oop rhs)
 			    return set(base, Variable,value, rhs);
 			}
 			case Memory: {
+			    requireNotFreed(base, "setting");
 			    int size = get(base, Memory,size);
 			    if (offset < 0 || offset * scale > size - scale)
 				fatal("assigning to out-of-bounds pointer");
@@ -3801,10 +3810,7 @@ oop eval(oop exp)
 	    oop rhs = get(exp, Dereference,rhs);
 	    rhs = eval(rhs);
 	    switch (getType(rhs)) {
-	      case Pointer:	{
-			//if(get(rhs, Pointer, isfree))fatal("freed memory deref/eval");
-			RETURN(getPointer(rhs, 0));
-		}
+	      case Pointer:	RETURN(getPointer(rhs, 0));
 		default:	break;
 	    }
 	    println(rhs);
