@@ -63,6 +63,6 @@ spotless : clean
 clean : .FORCE
 	rm -f main opt
 
-% :main
+% : main mydemo/%.c
 	./main -vv mydemo/$@.c
 .FORCE :
