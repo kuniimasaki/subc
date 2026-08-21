@@ -9,14 +9,14 @@ int main() {
   int *p = (int *)0 + 50; // Pointer{base=Integer(0), offset=50} -> effective value 50*sizeof(int) = 200
 
   if (p > 100)
-    printf("greater\n");
+    printf("GT_YES\n");
   else
-    printf("not greater\n");
+    printf("GT_NO\n");
 
   if (p < 100)
-    printf("less\n");
+    printf("LT_YES\n");
   else
-    printf("not less\n");
+    printf("LT_NO\n");
 
   return 0;
 }

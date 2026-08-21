@@ -1,0 +1,2 @@
+EXIT=0
+CONTAINS=allocated memory not freed at end of program

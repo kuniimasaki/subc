@@ -16,6 +16,9 @@ opt : main.c
 	$(CC) $(OFLAGS) $(CPPFLAGS) $(LDFLAGS) -o $@ $< $(LDLIBS)
 
 test : main
+	./scripts/run-tests.sh
+
+smoke : main
 	./main -vv test.txt
 
 eratosthenes : main

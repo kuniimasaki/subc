@@ -1,0 +1,2 @@
+EXIT=1
+CONTAINS=illegal comparison between pointers to different objects

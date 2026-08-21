@@ -1,0 +1,2 @@
+EXIT=1
+CONTAINS=attempt to free pointer to variable
