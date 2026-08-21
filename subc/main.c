@@ -4,7 +4,7 @@
 #include <stdlib.h>
 #include <string.h>
 #define YYRULECOUNT 119
-#line 5 "/home/kikima/subc_check/stage3_main.leg"
+#line 5 "main.leg"
 
 ;
 #include <stdio.h>
@@ -8261,7 +8261,7 @@ YY_PARSE(yycontext *) YYRELEASE(yycontext *yyctx)
 }
 
 #endif
-#line 2151 "/home/kikima/subc_check/stage3_main.leg"
+#line 2151 "main.leg"
 
 ;
 
