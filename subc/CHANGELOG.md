@@ -83,6 +83,32 @@
     → **`db54b89`/`11486ea` で修正済み**(下記参照。実際の原因は `preval`/`eval` の二重評価ではなく
     `initialiseVariable()` の `break;` 漏れだった)。
 
+### Task 5: 自動テストハーネス
+
+- **`b25cc37`** — `if`/`while` の条件式でポインタ型を許可(`for` は既に許可していたのと揃える)。
+  - `typeCheck()` の `If`/`While` ケースは条件の型が厳密に `t_int` であることを要求していたが、
+    `For` は `t_int != cond && !is(Tpointer, cond)` と既にポインタ型も許可しており、実行時側の
+    `toBoolean()`(if/while/for共通)も元々ポインタを問題なく扱えていた。`null-pointer.c` の
+    陰性テスト(`if (ptr) ...` でNULLチェック)を書く過程で発覚。`For` と同じ条件チェックに揃えた。
+  - 追加テスト(陰性ケース6本): `use-after-free-ok-unused.c`(解放後に触らない)、
+    `use-after-free-ok-reassign.c`(解放後すぐ新しい値を再代入してから使う)、
+    `multiple-free-ok-distinct.c`(別々のポインタをそれぞれ1回ずつ解放)、
+    `dangling-pointer-ok-alive.c`(まだ生きている変数へのポインタ)、
+    `null-pointer-ok-checked.c`(使う前にNULLチェック、上記修正に依存)、
+    `out-of-bounds-access-ok-inbounds.c`(範囲内アクセスのみ)。
+
+- **`37b7645`** — `demofiles/` を正式な自動テストスイート化。
+  - `scripts/run-tests.sh`: 各 `demofiles/<name>.c` に対応する `demofiles/<name>.expect`
+    (`EXIT=0|1` + 任意の `CONTAINS=<部分文字列>`)を読み、実行結果と突き合わせて PASS/FAIL 判定。
+    `.expect` が無いファイルはスキップ(未整備として扱う、段階的導入が可能)。
+  - `make test` を新設(旧 `test` ターゲット、単発の `./main -vv test.txt` は `make smoke` に改名して温存)。
+  - 既存の `demofiles/*.c` 全件(元からあるバグデモ+今回追加した修正検証用デモ)に `.expect` を追加。
+  - **ハーネス自体の検証**: 修正前バイナリ(`main_orig`)に対して実行し、今回のセッションで直した
+    バグに対応する6件がちゃんと FAIL することを確認(それ以外は変化なし)。この過程で
+    `pointer-compare-cast.expect` の `CONTAINS=greater` がバグ版の出力 `"not greater"` にも
+    部分文字列として一致してしまい**偽陽性(false pass)になっていたことが判明** →
+    デモの出力を `GT_YES`/`GT_NO`/`LT_YES`/`LT_NO` という曖昧さのないトークンに変更して修正。
+
 ### 調査のみ(未修正)— パーサ側(AST生成)の監査
 
 バックグラウンド調査エージェントによる `main.leg` の文法規則(セマンティックアクション)監査。

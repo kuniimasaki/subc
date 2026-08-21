@@ -31,7 +31,8 @@ subc/
 ```sh
 cd subc
 make          # main.leg -> main.c -> main をビルド
-make demo     # demofiles/*.c を全件実行
+make test     # demofiles/*.c を自動テストハーネスで一括検証(PASS/FAIL判定)
+make demo     # demofiles/*.c を全件実行(目視確認用)
 ```
 
 `main.leg` を編集した場合は `leg -o main.c main.leg`(または `make`)で必ず `main.c` を
@@ -55,6 +56,12 @@ make demo     # demofiles/*.c を全件実行
 - リーク誤検知(`malloc→free` してもレポートされる)の根本原因(`initialiseVariable()` の
   `break;` 漏れによる初期化式の二重評価)を特定・修正。副次的に `setMemory()` の
   NULLポインタの構造体フィールド格納未対応も修正。
+
+**自動テストハーネス**
+- `if`/`while` の条件式でポインタ型を許可(`for` は既に許可済みだったのに揃えた)。
+- `scripts/run-tests.sh` + `demofiles/*.expect` + `make test` で、`demofiles/*.c` を
+  「期待する終了コード・出力」と突き合わせて自動判定できるようにした。陽性ケース(バグを踏む)
+  だけでなく、陰性ケース(似ているが合法なコード、誤検知しないことの確認)6本も追加。
 
 **ドキュメント**
 - `docs/design/` に機能拡張(`realloc`/`calloc` 等)と VM(`-O`)監査の設計メモを追加。
