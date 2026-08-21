@@ -4,7 +4,7 @@
 #include <stdlib.h>
 #include <string.h>
 #define YYRULECOUNT 119
-#line 5 "/home/kikima/subc_check/stage_sm_main.leg"
+#line 5 "/home/kikima/subc_check/stage_leak_main.leg"
 
 ;
 #include <stdio.h>
@@ -8261,7 +8261,7 @@ YY_PARSE(yycontext *) YYRELEASE(yycontext *yyctx)
 }
 
 #endif
-#line 2151 "/home/kikima/subc_check/stage_sm_main.leg"
+#line 2151 "/home/kikima/subc_check/stage_leak_main.leg"
 
 ;
 
@@ -9840,6 +9840,7 @@ void initialiseVariable(oop var, int local)
 		    fatal("cannot initialise pointer with %s", getTypeName(value));
 		    break;
 	    }
+	    break;
 	}
 	default: {
 	    if (!isNil(init)) set(var, Variable,value, evaluate(init));

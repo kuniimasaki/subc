@@ -3726,6 +3726,7 @@ void initialiseVariable(oop var, int local)
 		    fatal("cannot initialise pointer with %s", getTypeName(value));
 		    break;
 	    }
+	    break;
 	}
 	default: {
 	    if (!isNil(init)) set(var, Variable,value, evaluate(init));
