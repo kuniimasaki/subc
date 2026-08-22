@@ -3567,6 +3567,96 @@ oop setArray(oop array, int index, oop value)
     return 0;
 }
 
+// VM-only primitives (Task 3, Option B from docs/design/task3-vm-audit-
+// and-design.md): compileOn lowers Dereference/Index (rvalue) and
+// pointer/index-typed Assign (lvalue) into Call nodes targeting these,
+// reusing the already-working iCALL/Primitive dispatch instead of adding
+// new opcodes. Each one is a thin wrapper around the exact same
+// getPointer/setMemory/getArray/setArray/setPointer functions the
+// tree-walker's eval()/assign() call -- so requireNotFreed() (reached via
+// getPointer/setMemory) protects the VM path for free, with no duplicated
+// safety-check logic to keep in sync. Never exposed to user source (not
+// in _do_primitives, not declare()'d into any scope); compileOn embeds
+// them directly as bytecode literals.
+
+oop prim_vm_deref(int argc, oop *argv, oop env)
+{
+    if (argc != 1) fatal("*p: wrong number of arguments");
+    oop ptr = argv[0];
+    if (!is(Pointer, ptr)) fatal("cannot dereference non-pointer: %s", toString(ptr));
+    return getPointer(ptr, 0);
+}
+
+oop prim_vm_store_deref(int argc, oop *argv, oop env)
+{
+    if (argc != 2) fatal("*p = v: wrong number of arguments");
+    oop ptr = argv[0], rhs = argv[1];
+    if (!is(Pointer, ptr)) fatal("cannot store through non-pointer: %s", toString(ptr));
+    oop base   = get(ptr, Pointer,base);
+    int offset = get(ptr, Pointer,offset);
+    oop type   = get(get(ptr, Pointer,type), Tpointer,target);
+    switch (getType(base)) {
+	case Variable: {
+	    if (offset) fatal("pointer modified");
+	    return set(base, Variable,value, rhs);
+	}
+	case Memory:
+	    return setMemory(base, offset * typeSize(type), type, rhs);
+	default:
+	    fatal("cannot store through pointer: %s", toString(ptr));
+    }
+    return 0;
+}
+
+oop prim_vm_index(int argc, oop *argv, oop env)
+{
+    if (argc != 2) fatal("p[i]: wrong number of arguments");
+    oop base = argv[0], idx = argv[1];
+    if (!is(Integer, idx)) fatal("array index is not 'int'");
+    int index = _integerValue(idx);
+    switch (getType(base)) {
+	case Array:	return getArray(base, index);
+	case Pointer:	return getPointer(base, index);
+	default:	fatal("cannot index type %s", getTypeName(base));
+    }
+    return 0;
+}
+
+oop prim_vm_store_index(int argc, oop *argv, oop env)
+{
+    if (argc != 3) fatal("p[i] = v: wrong number of arguments");
+    oop base = argv[0], idx = argv[1], rhs = argv[2];
+    if (!is(Integer, idx)) fatal("array index is not 'int'");
+    int index = _integerValue(idx);
+    switch (getType(base)) {
+	case Array:	return setArray(base, index, rhs);
+	case Pointer:	return setPointer(base, index, rhs);
+	default:	fatal("cannot index-assign type %s", getTypeName(base));
+    }
+    return 0;
+}
+
+// mirrors the pointer-coercion logic initialiseVariable()'s Tpointer case
+// already applies for the tree-walker (e.g. int *p = malloc(...): malloc
+// returns a t_pvoid pointer, which needs casting to the declared int*
+// before being stored) -- compileOn's VarDecls case calls this so a
+// VM-compiled local declaration's initialiser gets the same coercion.
+oop castPointer(oop pointer, oop type); // defined below, near initialiseVariable
+
+oop prim_vm_coerce(int argc, oop *argv, oop env)
+{
+    if (argc != 2) fatal("internal: prim_vm_coerce wrong arity");
+    oop value = argv[0], type = argv[1];
+    if (is(Tpointer, type)) {
+	if (is(Pointer, value)) {
+	    if (get(value, Pointer,type) != type) return castPointer(value, type);
+	    return value;
+	}
+	if (is(Integer, value) && !_integerValue(value)) return newPointer(type, value, 0);
+    }
+    return value;
+}
+
 oop assign(oop lhs, oop rhs)
 {
     oop dst = lhs;
@@ -3874,7 +3964,16 @@ void initialiseVariable(oop var, int local)
 		case Pointer: {
 		    oop vtype = get(value, Pointer,type);
 		    if (type != vtype) {
-			if (vtype != t_pvoid || !isNull(value))
+			// a void* -- e.g. malloc()'s return value -- implicitly
+			// converts to any pointer type regardless of null-ness,
+			// exactly like real C; only a mismatch between two
+			// *non*-void, non-identical pointer types (or a non-null
+			// value where neither side is void*) needs an explicit
+			// cast. This previously required the source to be BOTH
+			// void* AND null, rejecting the extremely common
+			// `int *p = malloc(...);` (no cast) with "cannot convert
+			// non-NULL pointer 'void *' to 'int *'".
+			if (vtype != t_pvoid && !isNull(value))
 			    fatal("cannot convert non-NULL pointer '%s' to '%s'", toString(vtype), toString(type));
 			value = castPointer(value, type);
 		    }
@@ -4538,6 +4637,7 @@ enum opcode_t { iHALT = 0, iPUSH, iPOP,
     iLT, iLE, iGE, iGT, iEQ, iNE,
     iAND, iXOR, iOR,
     iGETGVAR, iSETGVAR,
+    iDECL,
     iCLOSE,
     iCALL, iRETURN,
     iJMP, iJMPF,
@@ -4586,6 +4686,7 @@ void disassemble(oop program)
 	    case iOR:		printf("OR\n");					break;
 	    case iGETGVAR:	printf("GETGVAR\t");  	println(code[pc++]);	break;
 	    case iSETGVAR:	printf("SETGVAR\t");  	println(code[pc++]);	break;
+	    case iDECL:		printf("DECL\t");	println(code[pc++]);	break;
 	    case iCLOSE:	printf("CLOSE\t");	println(code[pc++]);	break;
 	    case iCALL:		printf("CALL\t");	println(code[pc++]);	break;
 	    case iRETURN:	printf("RETURN\n");				break;
@@ -4707,7 +4808,24 @@ oop execute(oop program)
 		    push(get(keyval, Pair,tail));
 		    continue;
 		}
-		push(get(operand, Symbol,value));
+		oop val = get(operand, Symbol,value);
+		if (!isNil(val)) {
+		    push(val);
+		    continue;
+		}
+		// Symbol,value (the VM's own "global" storage, written by
+		// iSETGVAR) and the tree-walker's `scopes` (written by
+		// declare(), e.g. for every extern primitive -- malloc,
+		// free, etc. -- and, via compileOn's Function case, every
+		// -O-compiled function) are two separate storage universes;
+		// fall back to the latter so a VM-compiled call can actually
+		// find a primitive or another function by name.
+		oop resolved = Scope_lookup(operand);
+		if (resolved) {
+		    push(is(Variable, resolved) ? get(resolved, Variable,value) : resolved);
+		    continue;
+		}
+		fatal("undefined variable '%s'", get(operand, Symbol,name));
 		continue;
 	    }
 	    case iSETGVAR: {
@@ -4718,6 +4836,15 @@ oop execute(oop program)
 		    continue;
 		}
 		set(operand, Symbol,value, top);
+		continue;
+	    }
+	    case iDECL: {
+		// introduces a new local: pops the initial value and conses
+		// (symbol . value) onto the current lexical environment, so
+		// later iGETGVAR/iSETGVAR of the same symbol in this scope
+		// find it via assoc() before falling back to Symbol,value
+		oop operand = code[pc++];
+		env = newPair(newPair(operand, pop()), env);
 		continue;
 	    }
 	    case iCLOSE: {
@@ -4812,7 +4939,19 @@ void compileOn(oop exp, oop program, oop cs, oop bs)
 	case String:	EMITio(iPUSH, exp);	return;
 	case List:	assert(!"unimplemented");
 	case Memory:	assert(!"unimplemented");
-	case Primitive:	EMITio(iPUSH, exp);	return;
+	case Primitive: {
+	    // an unresolved extern declaration (e.g. `extern void *malloc(long
+	    // size);`, parsed from the #include <stdlib.h> stub -- and every
+	    // #include'd form is compiled through this same generic path
+	    // under -O, same as the Function case) has no C function pointer
+	    // bound yet; typeCheck()'s Primitive case is what matches it
+	    // against _do_primitives and declares it into scope. An already-
+	    // resolved Primitive flowing through as an ordinary value (function
+	    // is already bound) is just pushed as a literal.
+	    if (!get(exp, Primitive,function)) typeCheck(exp, nil);
+	    EMITio(iPUSH, exp);
+	    return;
+	}
 	case Reference: assert(!"unimplemented");
 	case Closure:	EMITio(iPUSH, exp);	return;
 	case Call: {
@@ -4840,8 +4979,20 @@ void compileOn(oop exp, oop program, oop cs, oop bs)
 	    return;
 	}
 	case Addressof:		assert(!"unimplemented");
-	case Dereference:	assert(!"unimplemented");
-	case Sizeof:		assert(!"unimplemented");
+	case Dereference: {
+	    static oop p_deref = 0;
+	    if (!p_deref) p_deref = newPrimitive(intern("*p"), nil, nil, prim_vm_deref);
+	    compileOn(get(exp, Dereference,rhs), program, cs, bs);
+	    EMITio(iPUSH, p_deref);
+	    EMITii(iCALL, 1);
+	    return;
+	}
+	case Sizeof: {
+	    // already resolved to a literal Integer by the typeCheck() call
+	    // compileOn's Function case ran over the whole body up front
+	    EMITio(iPUSH, get(exp, Sizeof,size));
+	    return;
+	}
 	case Unary: {
 	    compileOn(get(exp, Unary,rhs), program, cs, bs);
 	    switch (get(exp, Unary,operator)) {
@@ -4885,14 +5036,45 @@ void compileOn(oop exp, oop program, oop cs, oop bs)
 		    assert(!"unimplemented");
 	    }
 	}
-	case Index:		    assert(!"unimplemented");
+	case Index: {
+	    static oop p_index = 0;
+	    if (!p_index) p_index = newPrimitive(intern("p[i]"), nil, nil, prim_vm_index);
+	    compileOn(get(exp, Index,rhs), program, cs, bs); // index (2nd logical arg) pushed first
+	    compileOn(get(exp, Index,lhs), program, cs, bs); // base  (1st logical arg) pushed last
+	    EMITio(iPUSH, p_index);
+	    EMITii(iCALL, 2);
+	    return;
+	}
 	case Member:		    assert(!"unimplemented");
 	case Assign: {
-	    oop symbol = get(exp, Assign,lhs);
-	    oop expr   = get(exp, Assign,rhs);
-	    compileOn(expr, program, cs, bs);
-	    EMITio(iSETGVAR, symbol);
-	    return;
+	    oop lhs = get(exp, Assign,lhs);
+	    oop rhs = get(exp, Assign,rhs);
+	    switch (getType(lhs)) {
+		case Dereference: {
+		    static oop p_store_deref = 0;
+		    if (!p_store_deref) p_store_deref = newPrimitive(intern("*p="), nil, nil, prim_vm_store_deref);
+		    compileOn(rhs, program, cs, bs);			      // value  (2nd logical arg) pushed first
+		    compileOn(get(lhs, Dereference,rhs), program, cs, bs);   // pointer(1st logical arg) pushed last
+		    EMITio(iPUSH, p_store_deref);
+		    EMITii(iCALL, 2);
+		    return;
+		}
+		case Index: {
+		    static oop p_store_index = 0;
+		    if (!p_store_index) p_store_index = newPrimitive(intern("p[i]="), nil, nil, prim_vm_store_index);
+		    compileOn(rhs, program, cs, bs);			// value (3rd logical arg) pushed first
+		    compileOn(get(lhs, Index,rhs), program, cs, bs);	// index (2nd logical arg)
+		    compileOn(get(lhs, Index,lhs), program, cs, bs);	// base  (1st logical arg) pushed last
+		    EMITio(iPUSH, p_store_index);
+		    EMITii(iCALL, 3);
+		    return;
+		}
+		default: {
+		    compileOn(rhs, program, cs, bs);
+		    EMITio(iSETGVAR, lhs);
+		    return;
+		}
+	    }
 	}
 
 	case Cast: {
@@ -4983,7 +5165,35 @@ void compileOn(oop exp, oop program, oop cs, oop bs)
 	case Tstruct:	assert(!"unimplemented");    	return;
 	case Tfunction:	assert(!"unimplemented");    	return;
 	case Tetc:	assert(!"unimplemented");    	return;
-	case VarDecls:	assert(!"unimplemented");    	return;
+	case VarDecls: {
+	    // by the time compileOn reaches this (compiling a function body
+	    // that compileOn's own Function case already ran typeCheck()
+	    // over), VarDecls,variables has already been rewritten by
+	    // typeCheck's VarDecls case into a list of resolved Variable
+	    // objects whose ,value field holds the raw (unevaluated)
+	    // initialiser expression -- the same shape eval()'s VarDecls
+	    // case consumes. Compile each initialiser (or push nil if
+	    // absent) and iDECL it into the current lexical environment.
+	    static oop p_coerce = 0;
+	    if (!p_coerce) p_coerce = newPrimitive(intern("<vardecl-init>"), nil, nil, prim_vm_coerce);
+	    oop vars = get(exp, VarDecls,variables);
+	    int n = get(vars, List,size);
+	    oop *velts = get(vars, List,elements);
+	    for (int i = 0;  i < n;  ++i) {
+		oop var  = velts[i];
+		oop name = get(var, Variable,name);
+		oop type = get(var, Variable,type);
+		oop init = get(var, Variable,value);
+		EMITio(iPUSH, type); // pushed first -> ends up as argv[1] (type)
+		if (isNil(init)) EMITio(iPUSH, nil);
+		else compileOn(init, program, cs, bs); // pushed last -> argv[0] (value)
+		EMITio(iPUSH, p_coerce);
+		EMITii(iCALL, 2);
+		EMITio(iDECL, name);
+	    }
+	    EMITio(iPUSH, nil); // VarDecls-as-statement's own "value"
+	    return;
+	}
 	case TypeDecls:	assert(!"unimplemented");    	return;
 	case Scope:	assert(!"this cannot happen");	return;
 	case TypeName:	assert(!"unimplemented");    	return;
