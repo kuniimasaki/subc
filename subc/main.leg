@@ -71,7 +71,7 @@ typedef union Object Object, *oop;
     _(Tvoid) _(Tchar) _(Tshort) _(Tint) _(Tlong) _(Tfloat) _(Tdouble)			\
     _(Tpointer) _(Tarray) _(Tstruct) _(Tfunction) _(Tetc)				\
     _(Scope) _(TypeName) _(Variable) _(Constant) _(Function) _(Primitive)		\
-    _(VarDecls) _(TypeDecls)
+    _(VarDecls) _(TypeDecls) _(Switch) _(Case) _(Default)
 
 #define _do_unaries(_)							\
     _(NEG) _(NOT) _(COM) _(PREINC) _(PREDEC) _(POSTINC) _(POSTDEC)
@@ -145,6 +145,9 @@ struct Cast   	   { type_t _type;  oop type, rhs;  cvt_t converter; };
 struct While   	   { type_t _type;  oop condition, expression; };
 struct For   	   { type_t _type;  oop initialiser, condition, update, body; };
 struct If      	   { type_t _type;  oop condition, consequent, alternate; };
+struct Switch      { type_t _type;  oop condition, statements; };
+struct Case        { type_t _type;  oop value; };
+struct Default     { type_t _type; };
 struct Return  	   { type_t _type;  oop value; };
 struct Continue	   { type_t _type; };
 struct Break  	   { type_t _type; };
@@ -739,6 +742,9 @@ oop newCast(oop type, oop rhs)
 CTOR2(While,  condition, expression);
 CTOR4(For,    initialiser, condition, update, body);
 CTOR3(If,     condition, consequent, alternate);
+CTOR2(Switch, condition, statements);
+CTOR1(Case,   value);
+CTOR0(Default);
 CTOR1(Return, value);
 CTOR0(Continue);
 CTOR0(Break);
@@ -1623,6 +1629,21 @@ void printiln(oop obj, int indent)
 	    printiln(get(obj, If,alternate),  indent+1);
 	    break;
 	}
+	case Switch: {
+	    printf("SWITCH\n");
+	    printiln(get(obj, Switch,condition), indent+1);
+	    printiln(get(obj, Switch,statements), indent+1);
+	    break;
+	}
+	case Case: {
+	    printf("CASE\n");
+	    printiln(get(obj, Case,value), indent+1);
+	    break;
+	}
+	case Default: {
+	    printf("DEFAULT\n");
+	    break;
+	}
 	case Return: {
 	    printf("RETURN\n");
 	    printiln(get(obj, Return,value),  indent+1);
@@ -1938,6 +1959,9 @@ stmt	= WHILE c:cond s:stmt	 	{ $$ = newWhile(c, s) }
 	  ( ELSE t:stmt			{ $$ = newIf(c, s,   t) }
 	  |				{ $$ = newIf(c, s, nil) }
 	  )
+	| SWITCH c:cond LBRACE b:mkList
+	  ( x:swstmt			{ List_append(b, x) }
+	  )* RBRACE			{ $$ = newSwitch(c, b) }
 	| RETURN e:expropt SEMI		{ $$ = newReturn(e) }
 	| CONTINU SEMI			{ $$ = newContinue() }
 	| BREAK  SEMI			{ $$ = newBreak() }
@@ -1945,6 +1969,10 @@ stmt	= WHILE c:cond s:stmt	 	{ $$ = newWhile(c, s) }
 	| e:expr SEMI			{ $$ = e }
 	| typedec
 	| vardecl
+
+swstmt	= CASE v:expr COLON		{ $$ = newCase(v) }
+	| DEFAULT COLON			{ $$ = newDefault() }
+	| stmt
 
 cond	= LPAREN e:expr RPAREN		{ $$ = e }
 
@@ -2087,6 +2115,7 @@ id	= !keyword < alpha alnum*  > -	{ $$ = intern(yytext) }
 keyword	= TYPEDEF | VOID | CHAR | SHORT | INT | LONG | FLOAT | DOUBLE
 	| STRUCT | UNION | ENUM | STATIC | EXTERN
 	| IF | ELSE | WHILE | FOR | RETURN | CONTINU | BREAK
+	| SWITCH | CASE | DEFAULT
 
 alpha	= [a-zA-Z_]
 alnum	= [a-zA-Z_0-9]
@@ -2119,9 +2148,13 @@ IF	= < "if"	![_a-zA-Z0-9] > { $$ = newToken(yytext) } -
 ELSE	= < "else"     	![_a-zA-Z0-9] > { $$ = newToken(yytext) } -
 WHILE	= < "while"    	![_a-zA-Z0-9] > { $$ = newToken(yytext) } -
 FOR	= < "for"      	![_a-zA-Z0-9] > { $$ = newToken(yytext) } -
+SWITCH	= < "switch"   	![_a-zA-Z0-9] > { $$ = newToken(yytext) } -
+CASE	= < "case"     	![_a-zA-Z0-9] > { $$ = newToken(yytext) } -
+DEFAULT	= < "default"  	![_a-zA-Z0-9] > { $$ = newToken(yytext) } -
 RETURN	= < "return"   	![_a-zA-Z0-9] > { $$ = newToken(yytext) } -
 CONTINU = < "continue" 	![_a-zA-Z0-9] > { $$ = newToken(yytext) } -
 BREAK	= < "break"    	![_a-zA-Z0-9] > { $$ = newToken(yytext) } -
+COLON	= < ":"		> { $$ = newToken(yytext) } -
 DOT     = < "."  !"."   > { $$ = newToken(yytext) } -
 ARROW   = < "->"        > { $$ = newToken(yytext) } -
 ETC     = < "..."       > { $$ = newToken(yytext) } -
@@ -3016,6 +3049,22 @@ oop typeCheck(oop exp, oop fntype)
 	    Scope_end();
 	    return nil;
 	}
+	case Switch: {
+	    oop cond = typeCheck(get(exp, Switch,condition), fntype);
+	    if (t_int != cond) fatal("switch condition is not 'int'");
+	    Scope_begin();
+	    List_do(get(exp, Switch,statements), s) {
+		switch (getType(s)) {
+		    case Case:	   typeCheck(get(s, Case,value), fntype);  break;
+		    case Default:  break;
+		    default:	   typeCheck(s, fntype);  break;
+		}
+	    }
+	    Scope_end();
+	    return nil;
+	}
+	case Case:	return nil;
+	case Default:	return nil;
 	case Primitive: {
 	    oop type       = get(exp, Primitive,type      );
 	    oop name       = get(exp, Primitive,name      );
@@ -3152,6 +3201,8 @@ oop typeCheck(oop exp, oop fntype)
 		      toString(vtype), toString(result));
 	    return result;
 	}
+	case Continue:	return nil;
+	case Break:	return nil;
 	case VarDecls: {
 	    oop base  = makeBaseType(get(exp, VarDecls,type));
 	    printf("basetype:%d\n",getType(base));
@@ -4191,6 +4242,41 @@ oop eval(oop exp)
 	    else if (!isNil(altern)) eval(altern);
 	    RETURN(nil);
 	}
+	case Switch: {
+	    oop stmts = get(exp, Switch,statements);
+	    int size  = get(stmts, List,size);
+	    oop *elts = get(stmts, List,elements);
+	    oop cond  = eval(get(exp, Switch,condition));
+	    int start = -1, defaultIndex = -1;
+	    for (int i = 0;  i < size;  ++i) {
+		oop s = elts[i];
+		if (is(Case, s)) {
+		    if (start < 0 && equal(cond, eval(get(s, Case,value)))) start = i;
+		}
+		else if (is(Default, s)) defaultIndex = i;
+	    }
+	    if (start < 0) start = defaultIndex;
+	    oop result = nil;
+	    if (start >= 0) {
+		Scope_begin();
+		switch (nlrPush()) {
+		    case NLR_INIT:	break;
+		    case NLR_RETURN:	Scope_end();  --depth;  nlrReturn(NLR_RETURN,   nlrPop());
+		    case NLR_CONTINUE:	Scope_end();  --depth;  nlrReturn(NLR_CONTINUE, nlrPop());
+		    case NLR_BREAK:	Scope_end();  --depth;  return nlrPop();
+		}
+		for (int i = start;  i < size;  ++i) {
+		    oop s = elts[i];
+		    if (is(Case, s) || is(Default, s)) continue;
+		    result = eval(s);
+		}
+		Scope_end();
+		nlrPop();
+	    }
+	    RETURN(result);
+	}
+	case Case:	RETURN(nil);
+	case Default:	RETURN(nil);
 	case Return: {
 	    --depth;
 	    nlrReturn(NLR_RETURN, eval(get(exp, Return,value)));
@@ -4401,6 +4487,9 @@ oop preval(oop exp)
 	case While:		break;
 	case For:		break;
 	case If:		break;
+	case Switch:		break;
+	case Case:		break;
+	case Default:		break;
 	case Return:		break;
 	case Continue:		break;
 	case Break:		break;
@@ -4856,6 +4945,9 @@ void compileOn(oop exp, oop program, oop cs, oop bs)
 	    PATCH(J2, L2);
 	    return;
 	}
+	case Switch:	assert(!"unimplemented");
+	case Case:	assert(!"unimplemented");
+	case Default:	assert(!"unimplemented");
 	case Return:	assert(!"unimplemented");
 	case Continue: {
 	    if (nil == cs) fatal("continue outside loop");
