@@ -1952,7 +1952,17 @@ expropt	= expr | { $$ = nil }
 
 expr	= assign
 
-assign	= l:unary t:ASSIGN x:expr	{ $$ = newAssign(l, x, t) }
+assign	= l:unary t:ASSIGN    x:expr	{ $$ = newAssign(l, x, t) }
+	| l:unary t:PLUSEQ    x:expr	{ $$ = newAssign(l, newBinary(ADD,  l, x, t), t) }
+	| l:unary t:MINUSEQ   x:expr	{ $$ = newAssign(l, newBinary(SUB,  l, x, t), t) }
+	| l:unary t:STAREQ    x:expr	{ $$ = newAssign(l, newBinary(MUL,  l, x, t), t) }
+	| l:unary t:SLASHEQ   x:expr	{ $$ = newAssign(l, newBinary(DIV,  l, x, t), t) }
+	| l:unary t:PCENTEQ   x:expr	{ $$ = newAssign(l, newBinary(MOD,  l, x, t), t) }
+	| l:unary t:ANDEQ     x:expr	{ $$ = newAssign(l, newBinary(BAND, l, x, t), t) }
+	| l:unary t:BAREQ     x:expr	{ $$ = newAssign(l, newBinary(BOR,  l, x, t), t) }
+	| l:unary t:HATEQ     x:expr	{ $$ = newAssign(l, newBinary(BXOR, l, x, t), t) }
+	| l:unary t:LSHIFTEQ  x:expr	{ $$ = newAssign(l, newBinary(SHL,  l, x, t), t) }
+	| l:unary t:RSHIFTEQ  x:expr	{ $$ = newAssign(l, newBinary(SHR,  l, x, t), t) }
 	| logor
 
 logor	= l:logand  ( t:BARBAR r:logand	{ l  = newBinary(LOR, l, r, t) }
@@ -2119,14 +2129,20 @@ HASH    = < "#"         > { $$ = newToken(yytext) } -
 ASSIGN	= < "="  !"="  	> { $$ = newToken(yytext) } -
 PLUS	= < "+"  !"+"	> { $$ = newToken(yytext) } -
 PPLUS	= < "++"	> { $$ = newToken(yytext) } -
+PLUSEQ	= < "+="	> { $$ = newToken(yytext) } -
 MINUS	= < "-"  !"-"	> { $$ = newToken(yytext) } -
 MMINUS	= < "--"	> { $$ = newToken(yytext) } -
+MINUSEQ	= < "-="	> { $$ = newToken(yytext) } -
 STAR	= < "*"		> { $$ = newToken(yytext) } -
+STAREQ	= < "*="	> { $$ = newToken(yytext) } -
 BAR	= < "|"  !"|"	> { $$ = newToken(yytext) } -
 BARBAR	= < "||"	> { $$ = newToken(yytext) } -
+BAREQ	= < "|="	> { $$ = newToken(yytext) } -
 AND	= < "&"  !"&"	> { $$ = newToken(yytext) } -
 ANDAND	= < "&&"	> { $$ = newToken(yytext) } -
+ANDEQ	= < "&="	> { $$ = newToken(yytext) } -
 HAT	= < "^"		> { $$ = newToken(yytext) } -
+HATEQ	= < "^="	> { $$ = newToken(yytext) } -
 EQUAL	= < "=="	> { $$ = newToken(yytext) } -
 NEQUAL	= "!="		> { $$ = newToken(yytext) } -
 LESS	= < "<"  ![=<]	> { $$ = newToken(yytext) } -
@@ -2134,9 +2150,13 @@ LESSEQ	= < "<="	> { $$ = newToken(yytext) } -
 GRTREQ	= < ">="	> { $$ = newToken(yytext) } -
 GRTR	= < ">"  ![=>]	> { $$ = newToken(yytext) } -
 LSHIFT	= < "<<"	> { $$ = newToken(yytext) } -
+LSHIFTEQ = < "<<="	> { $$ = newToken(yytext) } -
 RSHIFT	= < ">>"	> { $$ = newToken(yytext) } -
+RSHIFTEQ = < ">>="	> { $$ = newToken(yytext) } -
 SLASH	= < "/"		> { $$ = newToken(yytext) } -
+SLASHEQ	= < "/="	> { $$ = newToken(yytext) } -
 PCENT	= < "%"		> { $$ = newToken(yytext) } -
+PCENTEQ	= < "%="	> { $$ = newToken(yytext) } -
 PLING	= < "!"  !"="	> { $$ = newToken(yytext) } -
 TILDE	= < "~"		> { $$ = newToken(yytext) } -
 LPAREN	= < "("		> { $$ = newToken(yytext) } -
@@ -2855,7 +2875,16 @@ oop typeCheck(oop exp, oop fntype)
 		    fatal("cannot divide '%s' and '%s'", toString(lhs), toString(rhs));
 		    break;
 		}
-		case MOD: 	assert(!"unimplemented"); 	break;
+		case MOD: {
+		    if (lhs == rhs) {
+			if (t_int    == lhs) return lhs;
+			if (t_long   == lhs) return lhs;
+			if (t_float  == lhs) return lhs;
+			if (t_double == lhs) return lhs;
+		    }
+		    fatal("cannot take remainder of '%s' and '%s'", toString(lhs), toString(rhs));
+		    break;
+		}
 		case ADD: {
 		    if (lhs == rhs) {
 			if (t_int   == lhs) return lhs;
@@ -2890,16 +2919,16 @@ oop typeCheck(oop exp, oop fntype)
 		case SHL: 	return t_int;//assert(!"unimplemented"); 	break;
 		case SHR: 	return t_int;//assert(!"unimplemented"); 	break;
 		case LT:	return t_int;
-		case LE: 	assert(!"unimplemented"); 	break;
-		case GE: 	assert(!"unimplemented"); 	break;
+		case LE: 	return t_int;
+		case GE: 	return t_int;
 		case GT: 	return t_int;
 		case EQ: 	return t_int;
 		case NE: 	return t_int;
-		case BAND: 	assert(!"unimplemented"); 	break;
-		case BXOR: 	assert(!"unimplemented"); 	break;
-		case BOR: 	assert(!"unimplemented"); 	break;
-		case LAND: 	assert(!"unimplemented"); 	break;
-		case LOR: 	assert(!"unimplemented"); 	break;
+		case BAND: 	return t_int;
+		case BXOR: 	return t_int;
+		case BOR: 	return t_int;
+		case LAND: 	return t_int;
+		case LOR: 	return t_int;
 	    }
 	    return nil;
 	}
