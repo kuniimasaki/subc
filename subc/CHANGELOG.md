@@ -249,3 +249,54 @@
   - `./scripts/run-tests.sh` → 49 passed, 0 failed(修正前は47)。
 
 Task 2 の残り(三項演算子 `?:`、`enum`/`union`)は優先度が低い項目として今回は見送り。
+
+### Task 3: VM(`-O`)にポインタ安全性フックを実装
+
+`docs/design/task3-vm-audit-and-design.md` が推奨した Option B(ポインタ操作を新規
+opcodeではなく既存の `iCALL`/`Primitive` 経由のプリミティブ呼び出しに脱糖し、
+`requireNotFreed()` に到達する既存の `getPointer`/`setMemory` をそのまま再利用する)を実装。
+
+- **`ee48d5b`** — Task 3 の第一歩: `-O` が実は `main()` を一切実行していなかった
+  (常にツリーウォーカーの `apply()` が使われ、`-O` の唯一の効果だった単発トップレベル式の
+  コンパイルも `return` 文で即クラッシュしていた)という根本的なギャップを解消。
+  `compileOn` の `Return` ケース実装、`Function` ケースが自分自身に対して
+  `typeCheck()` を実行するように変更(名前・引数・戻り値型の解決と scope への登録が
+  `-O` では一切行われていなかったため)、コンパイル済みクロージャを呼び出し名の
+  `Symbol.value` に束縛(`iGETGVAR` が実際に読む場所)、`iCALL` のパラメータ束縛が
+  生の `Variable` オブジェクトをキーにしていた(`iGETGVAR`/`iSETGVAR` が期待する
+  素の `Symbol` とは別物で、関数が自分の引数を一切参照できなかった)バグの修正、
+  インタプリタ本体の C `main()` が `-O` 時に `apply()` ではなく `iCALL`/`iRETURN`
+  経由で `main()` を実行するように変更。
+
+- **`43872d8`** — ポインタの読み書きを VM 経由でも安全にチェックできるようにする本題。
+  - `Dereference`/`Index`(値を読む側)と、ポインタ/添字型の `Assign`(値を書く側)を、
+    ツリーウォーカーの `getPointer`/`setMemory`/`getArray`/`setArray`/`setPointer` を
+    そのまま呼ぶだけの新規プリミティブ(`prim_vm_deref` 等、ユーザーコードから直接は
+    呼べない内部専用)への `Call` にコンパイルするよう変更。新しい opcode は
+    ローカル変数導入用の `iDECL` 1個のみ(安全性チェック自体には新opcodeを一切追加していない)。
+  - `iGETGVAR` が `Symbol.value`(VMの独自グローバル領域)しか見ておらず、
+    `declare()` で登録される側(`malloc`/`free` などの組み込み関数、および上記で
+    `-O` コンパイル時に登録されるようになったユーザー関数)を一切見つけられなかった
+    ため、`Scope_lookup()` へのフォールバックを追加。
+  - `#include <stdlib.h>` から生成される `extern` 宣言(`Primitive` ノード)も、
+    `Function` と同様「自分自身に `typeCheck()` を実行してから」でないと
+    `_do_primitives` によるC関数ポインタの束縛も `declare()` も一切されないことが判明し、修正。
+  - **副次的に発見**: `malloc()` の戻り値(`void*`)をキャストせずに
+    `int *p = malloc(...);` と書くと、ツリーウォーカー側でも
+    `cannot convert non-NULL pointer 'void *' to 'int *'` で fatal していた
+    (今回のVM作業とは無関係の既存バグ、直前のコミットの時点で既に再現することを確認)。
+    `initialiseVariable()` の該当チェックが「void* かつ NULL」の場合しか暗黙変換を
+    許可しておらず、非NULLの void* → 任意ポインタ型という(実際のCでは合法な)
+    暗黙変換を弾いていたのが原因。既存デモが全て明示キャストを書いていたため
+    今まで表面化していなかった。修正。
+  - **確認できたこと**: `malloc→*p=42→v=*p→free(p)` が `-O` 経由で正しく `42` を返し、
+    かつ「`free()` 後に読む」バージョンはツリーウォーカーの `use-after-free.c` と
+    **全く同じメッセージ**で検出されることを確認 —— Task 3 の研究目標
+    (メモリ安全性チェックがVM経由でも効く)がここで実際に達成された。
+  - 追加テスト: `vm-pointer-roundtrip-ok.c`、`vm-use-after-free.c`(修正前バイナリで
+    実際にクラッシュ(SIGABRT)することを確認済み)。
+  - `./scripts/run-tests.sh` → 52 passed, 0 failed(修正前は50)。
+
+引き続き未実装(`docs/design/task3-vm-audit-and-design.md` が「大規模」と評価した通り):
+構造体・配列リテラル・`for`ループ・キャスト・多くの宣言型など。今回実装したのは
+「ポインタの読み書きが安全性チェック付きでVM経由で動く」という核心部分のみ。
