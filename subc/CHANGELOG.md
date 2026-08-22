@@ -166,3 +166,48 @@
 各コミットについて、`leg` で `main.leg` から `main.c` を再生成 → `gcc -std=c99 -Werror -Wall -Wno-unused -g` で
 ビルド → `demofiles/*.c` 全件を実行し、修正前の出力(非決定的なヒープアドレスを除く)との差分が
 意図した変更のみであることを確認した。
+
+## 2026-08-23
+
+### Task 2 続き: `demofiles/` の境界値カバレッジ拡充と、その過程で見つかった基礎的なバグ
+
+- **`18cbe5e`** — 3件の関連バグを修正(境界値テストの拡充作業中に発見):
+  1. `prim_malloc` の負サイズチェックが tautology(常に真)になっていた。
+     `size_t size = _integerValue(arg)` で符号なし型に変換した**後**に `size >= 0` を
+     チェックしていたため、このチェックは意味を成していなかった。実際には別の
+     10MB上限チェックが偶然(符号あり→符号なし変換でラップアラウンドした巨大な値が
+     上限を超えるため)`malloc(-1)` を弾いていただけだった。符号なしに変換する前の
+     `long` の時点で符号をチェックするよう修正(`calloc` 側は元々正しく実装されていた)。
+  2. `converter()` の型変換テーブルに `char`/`short` への変換が一切登録されておらず、
+     **`char c = 'a';` という最も基本的なコードすら** `cannot convert 'int' to 'char'`
+     で fatal していた(文字リテラルは実際のC言語仕様通り `int` 型としてパースされるため)。
+     `int->char`・`int->short` を追加(実際のメモリへの書き込み時点で `setMemory` が
+     C言語のセマンティクス通り正しく切り詰めるため、型チェック側で変換を許可するだけで良い)。
+  3. `typeCheck()` の `case Assign:`(宣言時の初期化子ではなく、`x = y;` という**代入文**)は
+     型が完全一致するかポインタ互換でない限り一切の数値変換を許可していなかった
+     (`int x; long n=5; x = n;` すら fatal していた)。`VarDecls` の初期化子と同じく
+     `converter()` にフォールバックするよう修正。
+  - この3つにより、`char` 型の最も基本的な使い方(宣言・再代入・バッファへの1文字ずつの
+    書き込み)が初めて動くようになった。
+  - 追加テスト: `char-literal-assignment-ok.c`(修正前バイナリで実際に fatal することを確認済み)。
+
+- **`1c4a1ba`** — 境界値テスト6本を追加。
+  - `heap-array-oob.c`/`heap-array-ok-inbounds.c`: 既存のOOBデモ4本は全てスタック配列・
+    変数のみを対象にしていたため、`malloc()` したヒープ配列への範囲外アクセスを追加。
+  - `malloc-negative-size.c`: 上記1の修正を検証。
+  - `char-buffer-oob.c`: `char` バッファへの手動インデックスでのオーバーフロー
+    (上記2・3の修正があって初めて書けるようになったテスト)。
+  - `pointer-arithmetic-overflow.c`: 既存のポインタOOBデモは1〜6要素分のズレしか
+    見ていなかったため、100万要素分ズレたポインタ演算でも同じ境界チェックが効くことを確認。
+  - `./scripts/run-tests.sh` → 45 passed, 0 failed(修正前は39)。
+
+- **見つけたが今回は直していない既知の欠落**(`docs/design/task2-feature-inventory-and-proposal.md`
+  が「要確認」としていた項目の答え合わせで発覚): 多次元配列(`int a[3][4]; a[i][j]`)と、
+  構造体メンバの固定長配列(`struct S { int buf[4]; }; s.buf[i]`)は現状どちらも
+  `cannot load 'Tarray' from array/memory` で失敗する。`getArray()`/`getMemory()` が
+  「要素型がさらに配列」というケースを一切扱っておらず、`Array` 構造体自体に
+  `Pointer` の `offset` に相当するフィールドが無い(=「より大きなメモリブロックの
+  一部を指す配列ビュー」を表現できない)ことが根本原因。`Array` に offset を追加し、
+  `getArray`/`setArray`/`getMemory`/`setMemory`/`initialiseVariable`/`declareTag` 等
+  複数箇所に波及する中規模のアーキテクチャ変更が必要なため、今回はテスト追加止まりの
+  作業とは切り離し、別途着手することとした。
