@@ -109,7 +109,7 @@ char *binaryName(int op) {
 #undef _
 
 #define _do_primitives(_)							\
-    _(printf) _(assert) _(malloc) _(free) _(exit) _(abort) _(atoi) _(sqrtf)
+    _(printf) _(assert) _(malloc) _(free) _(realloc) _(calloc) _(exit) _(abort) _(atoi) _(sqrtf)
 
 #define _(X) oop s_##X = 0;
 _do_primitives(_)
@@ -8740,6 +8740,74 @@ oop prim_free(int argc, oop *argv, oop env) // array
   return nil;
 }
 
+oop prim_realloc(int argc, oop *argv, oop env) // array
+{
+  if (argc != 2) fatal("realloc: wrong number of arguments");
+  oop arg  = argv[0];
+  oop size = argv[1];
+  if (!is(Pointer,arg)) fatal("realloc: argument is not a pointer");
+  if (!is(Integer,size)) fatal("realloc: size argument is not an integer");
+  long newsize = _integerValue(size);
+  if (newsize < 0) fatal("realloc: invalid size argument: %s", toString(size));
+  if (isNull(arg)) {
+    // realloc(NULL, n) behaves like malloc(n)
+    if (newsize > 10*1024*1024)
+      fatal("cowardly refusing to allocate memory of size %ld", newsize);
+    void *ptr = MALLOC(newsize);
+    if (!ptr) fatal("malloc(%ld) failed", newsize);
+    oop mem = newMemory(ptr, newsize, 1);
+    List_append(heap, mem);
+    return newPointer(t_pvoid, mem, 0);
+  }
+  if (0 == newsize) fatal("realloc to size 0 is not supported by subc");
+  oop base = get(arg, Pointer,base);
+  switch (getType(base)) {
+    case Integer:	fatal("attempt to realloc arbitrary pointer %s", toString(arg));
+    case Variable:	fatal("attempt to realloc pointer to variable %s", toString(arg));
+    case Memory: {
+      if (!get(base, Memory,heap)) fatal("realloc: pointer was not returned by malloc/calloc/realloc: %s", toString(base));
+      if ( get(base, Memory,free)) fatal("realloc: pointer has already been freed: %s", toString(base));
+      void *oldraw = get(base, Memory,base);
+      void *newraw = REALLOC(oldraw, newsize);
+      if (!newraw) fatal("realloc(%ld) failed", newsize);
+      if (newraw == oldraw) {
+	// in-place: mutate the existing Memory object so every alias stays valid
+	set(base, Memory,size, newsize);
+	return arg;
+      }
+      // moved: invalidate the old Memory block for every alias that still
+      // references it, exactly like free() does, then wrap the new block
+      set(base, Memory,free, get(base, Memory,free) + 1);
+      oop mem = newMemory(newraw, newsize, 1);
+      List_append(heap, mem);
+      return newPointer(get(arg, Pointer,type), mem, 0);
+    }
+    default:	assert(!"this cannot happen");
+  }
+  return 0;
+}
+
+oop prim_calloc(int argc, oop *argv, oop env) // array
+{
+  if (argc != 2) fatal("calloc: wrong number of arguments");
+  oop narg = argv[0];
+  oop sarg = argv[1];
+  if (!is(Integer,narg)) fatal("calloc: invalid argument: %s", toString(narg));
+  if (!is(Integer,sarg)) fatal("calloc: invalid argument: %s", toString(sarg));
+  long n  = _integerValue(narg);
+  long sz = _integerValue(sarg);
+  if (n < 0 || sz < 0) fatal("calloc: invalid argument");
+  size_t size = (size_t)n * (size_t)sz;
+  if (n != 0 && size / (size_t)n != (size_t)sz) fatal("calloc: size overflow");
+  if (size > 10*1024*1024)
+    fatal("cowardly refusing to allocate memory of size %zd", size);
+  void *ptr = CALLOC(n, sz);
+  if (!ptr) fatal("calloc(%ld, %ld) failed", n, sz);
+  oop mem = newMemory(ptr, size, 1);
+  List_append(heap, mem);
+  return newPointer(t_pvoid, mem, 0);
+}
+
 oop prim_exit(int argc, oop *argv, oop env) // array
 {
     if (argc != 1) fatal("exit: wrong number of arguments");
@@ -9045,10 +9113,14 @@ oop typeCheck(oop exp, oop fntype)
 	    }
 	    List_do(parameters, var) {
 		oop ptype = makeBaseType(get(var, Variable,type));
-		if (t_void == ptype && (do_index || do_size > 1))
-		    fatal("illegal void parameter");
 		oop pname = get(var, Variable,name);
 		ptype = makeType(ptype, pname);
+		// only a bare 'void' parameter (no pointer/array declarator applied)
+		// is illegal here, and only when it isn't the sole parameter (a lone
+		// 'void' means "no parameters"); 'void *x' legitimately resolves to
+		// Tpointer(Tvoid), not t_void, so it must not be rejected.
+		if (t_void == ptype && (do_index || do_size > 1))
+		    fatal("illegal void parameter");
 		pname = makeName(pname);
 		set(var, Variable,name, pname);
 		set(var, Variable,type, ptype);
@@ -9086,10 +9158,14 @@ oop typeCheck(oop exp, oop fntype)
 	    }
 	    List_do(parameters, var) {
 		oop ptype = makeBaseType(get(var, Variable,type));
-		if (t_void == ptype && (do_index || do_size > 1))
-		    fatal("illegal void parameter");
 		oop pname = get(var, Variable,name);
 		ptype = makeType(ptype, pname);
+		// only a bare 'void' parameter (no pointer/array declarator applied)
+		// is illegal here, and only when it isn't the sole parameter (a lone
+		// 'void' means "no parameters"); 'void *x' legitimately resolves to
+		// Tpointer(Tvoid), not t_void, so it must not be rejected.
+		if (t_void == ptype && (do_index || do_size > 1))
+		    fatal("illegal void parameter");
 		pname = makeName(pname);
 		set(var, Variable,name, pname);
 		set(var, Variable,type, ptype);
