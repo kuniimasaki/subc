@@ -121,5 +121,12 @@ make demo     # demofiles/*.c を全件実行(目視確認用)
 - `make test` → 52 passed, 0 failed。構造体・配列・`for`・キャストなどはまだ未対応
   (詳細は `CHANGELOG.md`/`docs/design/task3-vm-audit-and-design.md` 参照)。
 
+**VM(`-O`)の実装状況を実測・文書化**
+- `demofiles/*.c` + `mydemo/*.c` 計62本を `-O` で実行し分類: 最後まで動くもの15本、
+  `compileOn()` 未実装ノードで `SIGABRT` するもの47本。原因の大半は `Cast`(明示的ポインタ
+  キャスト)、次いで `for` ループ、`&`、`++`/`--` 等。初期化式の無いローカル配列/構造体宣言が
+  実体確保されず `nil` にバインドされる既存バグも発見(コード変更は無し、調査のみ)。
+  詳細は `docs/design/vm-implementation-status.md` 参照。
+
 各修正は独立したコミットに分割し、コミットのたびに `demofiles/*.c` 全件を実行して
 既存の検出結果(非決定的なヒープアドレスを除く)が意図せず変化していないことを確認している。

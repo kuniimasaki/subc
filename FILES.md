@@ -135,6 +135,7 @@
 | `task2-feature-inventory-and-proposal.md` | Task 2 用の機能ギャップ調査+拡張提案(`realloc`/`calloc` の設計案を含む)。 |
 | `task3-vm-audit-and-design.md` | Task 3 用のバイトコードVM(`-O`)監査+安全性フック設計案(Option A/B比較、Option B採用)。 |
 | `task6-multi-agent-workflow.md` | Task 6 用の設計→実装→検証の3役パイプライン提案+`realloc`/`calloc`実装を題材にした試行レポート。 |
+| `vm-implementation-status.md` | `-O`(バイトコードVM)の実装状況スナップショット。`compileOn()` の全ASTノード種別の実装/未実装状況、`demofiles/*.c`+`mydemo/*.c` 全件を `-O` で実行した実測結果、優先度付き残作業をまとめたもの。`compileOn()` に変更を加えたら更新すること。 |
 
 ## `subc/docs/verification/`(検証レポート)
 
