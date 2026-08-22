@@ -2309,8 +2309,8 @@ cvt_t converter(int tfrom, int tto)
     static cvt_t converters[9][9] = {
 	/* void char short   int  long float double pointer array <- FROM TO -v */
 	{     0,   0,    0,    0,    0,    0,     0,      0,    0 },	// void
-	{     0,   0,    0,    0,    0,    0,     0,      0,    0 },	// char
-	{     0,   0,    0,    0,    0,    0,     0,      0,    0 },	// short
+	{     0,   0,    0, cvtI,    0,    0,     0,      0,    0 },	// char
+	{     0,   0,    0, cvtI,    0,    0,     0,      0,    0 },	// short
 	{     0,   0,    0, cvtI, cvtI,    0,     0,      0,    0 },	// int
 	{     0,   0,    0, cvtI,    0,    0,     0,   cvt_,    0 },	// long
 	{     0,   0,    0,    0,    0, cvt_,     0,      0,    0 },	// float
@@ -2590,8 +2590,9 @@ oop prim_malloc(int argc, oop *argv, oop env) // array
     if (argc != 1) fatal("malloc: wrong number of arguments");
     oop arg = argv[0];
     if (is(Integer,arg)) {
-	size_t size = _integerValue(arg);
-	if (size >= 0) {
+	long signedSize = _integerValue(arg);
+	if (signedSize >= 0) {
+	    size_t size = signedSize;
 	    if (size > 10*1024*1024)
 		fatal("cowardly refusing to allocate memory of size %zd", size);
 	    void *ptr = MALLOC(size);
@@ -2945,12 +2946,14 @@ oop typeCheck(oop exp, oop fntype)
 		switch (rht) {
 		    case Tpointer:  target = get(rhs, Tpointer,target);  break;
 		    case Tarray:    target = get(rhs, Tarray,  target);  break;
-		    default:	    goto error;
+		    default:	    break;
 		}
-		if (get(lhs, Tpointer,target) == target) return lhs;
-		goto error;
+		if (!isNil(target) && get(lhs, Tpointer,target) == target) return lhs;
 	    }
-	  error:
+	    // not an exact or pointer-compatible match: allow the same numeric
+	    // narrowing/widening conversions VarDecls initialisers already allow
+	    // (e.g. int = long, char = int) instead of requiring identical types
+	    if (converter(rht, lht)) return lhs;
 	    fatal("%sincompatible types assigning '%s' to '%s'", tokloc(get(exp, Assign,token)), toString(rhs), toString(lhs));
 	    return lhs;
 	}
