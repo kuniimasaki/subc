@@ -211,3 +211,41 @@
   `getArray`/`setArray`/`getMemory`/`setMemory`/`initialiseVariable`/`declareTag` 等
   複数箇所に波及する中規模のアーキテクチャ変更が必要なため、今回はテスト追加止まりの
   作業とは切り離し、別途着手することとした。
+
+### Task 2 続き: 複合代入演算子・`switch`/`case`/`default`(#5・#6)
+
+- **`28d7666`** — 複合代入演算子(`+= -= *= /= %= &= |= ^= <<= >>=`)を追加。
+  `l OP= r` をパース時に `newAssign(l, newBinary(OP, l, r, t), t)` へ脱糖するだけで、
+  新しいASTノードも評価器の変更も不要(ただし副作用のあるlvalue、例えば `arr[i++] += 1` は
+  lvalueの部分木を2回評価してしまうため副作用も2回起きる、という一般的な脱糖方式の
+  既知の制限は残る)。
+  - **副次的に発見**: `typeCheck()` の `Binary` ケースで `%`・`&`・`^`・`|`・`<=`・`>=`・
+    `&&`・`||` の8個の演算子が `assert(!"unimplemented")` のまま放置されており、
+    複合代入とは無関係に**普通の `x % 4` や `a <= b` ですら常にクラッシュしていた**
+    (修正前バイナリでも再現、今回のセッションの変更とは無関係の既存バグ)。
+    `%` は `*`/`/` と同じ int/long/float/double の厳密一致チェックに、残り7個は
+    既存の `<`/`>`/`==`/`!=`/`<<`/`>>` と同じ緩い `t_int` 固定スタブに合わせて修正。
+  - 追加テスト: `compound-assignment-ok.c`、`modulo-and-bitwise-ok.c`。
+  - `./scripts/run-tests.sh` → 47 passed, 0 failed(修正前は45)。
+
+- **`710ee68`** — `switch`/`case`/`default` を追加。
+  - `Switch{condition,statements}` の `statements` は `Case`/`Default` を目印として
+    含んだ**フラットな**文リストとして表現(`Block` と同じ発想)。評価時は条件を1回だけ
+    評価し、一致する `Case`(無ければ `Default`)を探してその位置から順に実行するだけで、
+    C言語の「フォールスルー」がそのまま実現できる。`break` は既存の `NLR_BREAK` 機構
+    (`while`/`for` と同じ)で switch だけを抜け、`continue`/`return` はあえて
+    catchせずそのまま外側(直近のループ/関数)へ伝播させている(switch内の`continue`は
+    switchではなくループを継続させる、という実際のC言語仕様通りの挙動)。
+  - **副次的に発見**: `typeCheck()` に `Continue`/`Break` のケースが一切無く、
+    `while (1) { if (x) break; }` という最も基本的なコードすら
+    `cannot convert Break to string` でクラッシュしていた(修正前バイナリでも再現、
+    今回のセッションの変更とは無関係の既存バグ)。`typeCheck()` に
+    `case Continue: return nil;`・`case Break: return nil;` を追加して修正。
+  - 新しい列挙値(`Switch`/`Case`/`Default`)は `_do_types` マクロの**末尾**に追加。
+    途中に挿入すると既存の全型の列挙値が繰り下がり、`demofiles/*.c` のデバッグ出力
+    (`basetype:N`/`vartype:N`)がことごとく変化してしまうことに回帰確認で気付いたため。
+  - 追加テスト: `switch-ok.c`(フォールスルー・複数case・break/continueの scope の違いを確認)、
+    `break-in-if-ok.c`。
+  - `./scripts/run-tests.sh` → 49 passed, 0 failed(修正前は47)。
+
+Task 2 の残り(三項演算子 `?:`、`enum`/`union`)は優先度が低い項目として今回は見送り。
