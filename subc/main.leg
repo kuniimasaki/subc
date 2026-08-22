@@ -4743,11 +4743,11 @@ oop execute(oop program)
 			oop *parv        = get(parameters, List,elements);
 			int      parn        = 0;
 			while (parn < parc && argc > 0) {
-			    environment = newPair(newPair(parv[parn++], pop()), environment);
+			    environment = newPair(newPair(get(parv[parn++], Variable,name), pop()), environment);
 			    --argc;
 			}
 			while (parn < parc)
-			    environment = newPair(newPair(parv[parn++], nil), environment);
+			    environment = newPair(newPair(get(parv[parn++], Variable,name), nil), environment);
 			sp += argc;
 			if (fp < 1) fatal("too many function calls");
 			--fp;
@@ -4948,7 +4948,13 @@ void compileOn(oop exp, oop program, oop cs, oop bs)
 	case Switch:	assert(!"unimplemented");
 	case Case:	assert(!"unimplemented");
 	case Default:	assert(!"unimplemented");
-	case Return:	assert(!"unimplemented");
+	case Return: {
+	    oop value = get(exp, Return,value);
+	    if (isNil(value)) EMITio(iPUSH, nil);
+	    else compileOn(value, program, cs, bs);
+	    EMITi(iRETURN);
+	    return;
+	}
 	case Continue: {
 	    if (nil == cs) fatal("continue outside loop");
 	    EMITio(iPUSH, nil);
@@ -4985,9 +4991,22 @@ void compileOn(oop exp, oop program, oop cs, oop bs)
 	case Constant:	assert(!"unimplemented");    	return;
 	case Function: {
 	    assert(0 == get(exp, Function,code));
+	    // -O bypasses typeCheck()/preval() entirely (see replFile), so nothing
+	    // has resolved this function's name/parameters/return type or declared
+	    // it into scope yet -- typeCheck()'s own Function case already does all
+	    // of that (and recursively type-checks the body), so reuse it here
+	    // rather than duplicating it, closing the "-O isn't even type-checked"
+	    // gap for whatever compileOn can actually compile.
+	    typeCheck(exp, nil);
 	    oop prog2 = compileFunction(get(exp, Function,body));
 	    set(exp, Function,code, get(prog2, List,elements));
 	    EMITio(iCLOSE, exp);
+	    // iGETGVAR (used to compile any later call to this function by
+	    // name) reads Symbol,value as its global-storage fallback -- bind
+	    // the closure there now, the same way a top-level `x = expr;`
+	    // form's iSETGVAR would, or no other compiled code could ever
+	    // find/call this function.
+	    EMITio(iSETGVAR, get(exp, Function,name));
 	    return;
 	}
     }
@@ -5151,7 +5170,29 @@ int main(int argc, char **argv)
     set(entry, Function,variadic, 1);
 
     if (opt_v > 1) printf("---------------- execute\n");
-    oop result = apply(entry, args, nil);
+    oop result;
+    if (opt_O) {
+	// Route main() through the VM instead of the tree-walker. compileOn's
+	// Function case (run when the "int main() {...}" top-level form was
+	// parsed) already stashed compiled bytecode in Function,code and
+	// declared "main" into scope -- apply()/eval() never gets involved.
+	// Reuse the exact iCALL/iRETURN mechanism any nested call already
+	// goes through: iPUSH a Closure over `entry`, iCALL it, iHALT to
+	// collect the result. Known limitation: called with zero arguments
+	// (argc/argv are not yet threaded into the VM's calling convention),
+	// so main(int argc, char **argv) parameters read as nil/0 under -O.
+	oop closure = newClosure(entry, nil);
+	oop program = newList();
+	List_append(program, newInteger(iPUSH));
+	List_append(program, closure);
+	List_append(program, newInteger(iCALL));
+	List_append(program, newInteger(0));
+	List_append(program, newInteger(iHALT));
+	result = execute(program);
+    }
+    else {
+	result = apply(entry, args, nil);
+    }
 
     if (!is(Integer, result)) {
 	printf("\n=> ");

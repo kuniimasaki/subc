@@ -5,6 +5,9 @@
 #
 #   EXIT=<0|1>              required exit code
 #   CONTAINS=<substring>     optional; must appear somewhere in stdout+stderr
+#   FLAGS=<extra CLI flags>  optional; passed to the interpreter before the
+#                            source file, e.g. `FLAGS=-O` to run under the
+#                            bytecode VM instead of the default tree-walker
 #
 # Files with no .expect are skipped (not yet formalised as a test case).
 #
@@ -36,8 +39,9 @@ for c in demofiles/*.c; do
 
   exp_exit=$(sed -n 's/^EXIT=//p' "$expect")
   exp_contains=$(sed -n 's/^CONTAINS=//p' "$expect")
+  flags=$(sed -n 's/^FLAGS=//p' "$expect")
 
-  out=$("$BIN" "$c" 2>&1)
+  out=$("$BIN" $flags "$c" 2>&1)
   act_exit=$?
 
   reason=""
