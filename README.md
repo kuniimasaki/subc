@@ -24,6 +24,8 @@ subc/
   CHANGELOG.md    # 変更履歴(詳細)
 ```
 
+各ファイルの詳細な説明は [`FILES.md`](FILES.md) を参照(新規ファイル追加時はそちらにも追記)。
+
 ## ビルド
 
 依存: `leg`/`peg`(Ian Piumarta の PEG parser generator)、`gcc`、`libgc-dev`。
