@@ -121,12 +121,27 @@ make demo     # demofiles/*.c を全件実行(目視確認用)
 - `make test` → 52 passed, 0 failed。構造体・配列・`for`・キャストなどはまだ未対応
   (詳細は `CHANGELOG.md`/`docs/design/task3-vm-audit-and-design.md` 参照)。
 
-**VM(`-O`)の実装状況を実測・文書化**
-- `demofiles/*.c` + `mydemo/*.c` 計62本を `-O` で実行し分類: 最後まで動くもの15本、
-  `compileOn()` 未実装ノードで `SIGABRT` するもの47本。原因の大半は `Cast`(明示的ポインタ
-  キャスト)、次いで `for` ループ、`&`、`++`/`--` 等。初期化式の無いローカル配列/構造体宣言が
-  実体確保されず `nil` にバインドされる既存バグも発見(コード変更は無し、調査のみ)。
-  詳細は `docs/design/vm-implementation-status.md` 参照。
+**VM(`-O`)の実装状況を実測・文書化 → 見つかったクラッシュ原因を全て実装**
+- 調査: `demofiles/*.c` + `mydemo/*.c` 計62本を `-O` で実行し分類: 最後まで動くもの15本、
+  `compileOn()` 未実装ノードで `SIGABRT` するもの47本(コード変更は無し、調査のみ)。
+- 実装: 頻度順に `Cast`・`For`・`Addressof`(`&x`)・`++`/`--`・`&&`/`||`・ローカル配列/構造体の
+  実体確保・配列初期化子リスト・`Member`(`s.field`)・`Switch`/`Case`/`Default`・トップレベル
+  `TypeDecls` を全て実装。`demofiles/*.c`+`mydemo/*.c` 計73本が全て `-O` でクラッシュせず
+  実行完了するようになった(調査開始時点は15/62)。`make test` → 63 passed, 0 failed
+  (VM専用回帰テスト14本を含む)。
+  - 副次的に発見・修正した静かなバグ(クラッシュではなく無限ループ/誤動作)3件:
+    `iJMPF` が `false`(実体は`Integer(0)`)を `nil` と取り違えて分岐が機能せず `while`
+    ループが無限ループしていた/ポインタの加算・比較が `integerValue()` に丸投げされ
+    `assert(ptr != 0)` のようなNULLチェックすら fatal していた/`switch` の初回実装が
+    `break` 経路でスタックを1個ずつリークしていた。
+  - 副次的に発見・修正した既存バグ1件: トップレベルの `VarDecls`/`TypeDecls`
+    (グローバル変数宣言、構造体タグ宣言のみの宣言、`typedef`)が `-O` では
+    typeCheck を一切通らず、ファイルスコープでの構造体宣言を含むプログラムが
+    `expected Variable, got Undefined` で fatal していた。
+  - 既知の残課題(意図的に深追いせず): VMにスコープ終了処理が無くローカル変数の
+    生存管理バグは検出されない、VMのスタックが固定32要素で深い再帰は溢れる、
+    typedefを挟んだ複雑なキャスト連鎖とビットレベルの型パニングは数値的な正確性が
+    未検証。詳細は `docs/design/vm-implementation-status.md` 参照。
 
 各修正は独立したコミットに分割し、コミットのたびに `demofiles/*.c` 全件を実行して
 既存の検出結果(非決定的なヒープアドレスを除く)が意図せず変化していないことを確認している。

@@ -324,3 +324,113 @@ opcodeではなく既存の `iCALL`/`Primitive` 経由のプリミティブ呼�
   クラッシュ実測結果、優先度付き残作業(`Cast` → `For` → `Addressof`/`++`/`--` →
   配列初期化子・ローカル配列実体確保 → `Switch`/`Member`/`LAND`/`LOR`/`TypeDecls` の順)を記載。
   今後 `compileOn()` に変更を加えた際はこの文書も更新する運用とする。
+
+### VM(`-O`)の実装状況調査で見つかったクラッシュ原因を全て実装(15/62 → 68/68 完走)
+
+上記の優先度リストに従い、`compileOn()` の未実装ノードを頻度順に全て実装。各コミットで
+`make test`(ツリーウォーカー側)の無回帰を確認しつつ進めた。
+
+- **`c741b4b`** — 実装作業の前に発見した、クラッシュではなく無限ループする静かなバグを先に修正。
+  `execute()` の `iJMPF` が条件の偽値を `nil` とだけ比較していたが、`false` の実体は
+  `newInteger(0)`(`nil` とは別オブジェクト)。比較・論理演算子は必ず `true`/`false` を
+  積むため `nil == cond` は事実上一度も成立せず、`while` ループは本体が1回でも実行されると
+  無限ループしていた(`assert(!"unimplemented")` の検知網には引っかからない)。
+  `isFalse(cond)` を使うよう修正。`if` の false 分岐も同じ理由で機能していなかったため
+  同時に直った。追加テスト: `vm-while-loop-ok.c`、`vm-if-false-branch-ok.c`。
+
+- **`9a3e8fd`** — `Cast`・`For`・`Addressof`・`++`/`--`・`&&`/`||` を実装。
+  - `Cast`: `Cast,converter`(typeCheckが確定させる生のC関数ポインタ)はVMのスタックに
+    乗せられないため、値ではなく `Cast` ノード自身を第2引数として新設の `prim_vm_cast` に
+    渡し、`eval()` のCastケースを完全に踏襲。
+  - `For`: 既存の `While` と同じスタック管理に、`continue` が本体をスキップして到達すべき
+    「更新式(step)」という別ステージを追加。
+  - `Addressof`(`&x`/`&a[i]`): 単なるプリミティブ追加では済まず、VMのローカル変数表現を
+    変更する必要があった。それまでVMの `env` は素の `(symbol . value)` alist で、
+    ツリーウォーカーの `Variable` オブジェクトに相当する「アドレスを取れる箱」が
+    VMのローカルには存在しなかった。`iDECL` と `iCALL` のパラメータ束縛を、値を直接
+    consするのではなく毎回フレッシュな `Variable` オブジェクトでラップするように変更
+    (再帰呼び出し同士が互いを壊さないよう、呼び出しごとに新規生成)、`iGETGVAR`/
+    `iSETGVAR` も `Variable,value` 経由に変更。これにより `getPointer`/`setPointer` の
+    既存の `Variable` ケースがVMのローカルにも無変更で効くようになった。
+    既知の未対応: ツリーウォーカーの `Scope_end()` によるローカル変数の生存管理
+    (`isdead` マーキング)に相当する仕組みがVMには無いため、`dangling-pointer.c` の
+    「関数を抜けた後のローカル変数アドレス使用」は `-O` では検出されない
+    (`docs/design/vm-implementation-status.md` に既知の残課題として記載)。
+  - `++`/`--`: `&x` と同じ「シンボルを評価せず生のまま渡す」トリックで実装。
+  - `&&`/`||`: 短絡評価(JMPF/JMPによる制御フロー)。`eval()` と同じセマンティクス
+    (`a && b` は `false` または b の**生の値**、`a || b` は `true` または b の生の値、
+    どちらも真偽値へのキャストはしない)。
+  - **副次的に発見・修正した静かなバグ**: `execute()` の `iADD`/`iLT`/`iLE`/`iGE`/`iGT`/
+    `iEQ`/`iNE` が `eval()` のBinaryケースと違いポインタ/配列を一切考慮せず常に
+    `integerValue()` に丸投げしていたため、`assert(ptr != 0)` のようなごく普通のNULL
+    チェックが「cannot convert Pointer to integer」で fatal していた(Addressofの
+    実装で初めて踏めるようになったコードパスで発覚、gdbで追跡)。`iADD` はポインタ/
+    配列+整数のポインタ演算に対応、比較演算子は `compare()`/`equal()` 経由に修正。
+  - もう一つの副次バグ: 自分で書いた `LAND` の初回実装が `While` の「JMPF の後に
+    もう一つpop」という形をそのまま真似てしまい、`iJMPF` 自体が既に条件値をpopする
+    ことを見落として二重popになっていた(`if (a && b)` が即座に "stack underflow")。
+    コミット前のテストで発覚、余分なpopを削除して修正。
+  - 追加テスト: `vm-cast-ok.c`、`vm-for-loop-ok.c`、`vm-addressof-ok.c`、
+    `vm-increment-ok.c`、`vm-logical-ops-ok.c`、`vm-pointer-arithmetic-ok.c`。
+  - `./scripts/run-tests.sh` → 60 passed, 0 failed(修正前は55)。
+
+- **`37142c5`** — ローカル配列/構造体の実体確保、配列初期化子リスト、`Member`
+  (`s.field`)を実装。
+  - 初期化式の無い `int a[3];` が `nil` にバインドされる(調査で発見済みの)バグを、
+    `VarDecls` を宣言型で分岐させて修正。`Tarray`/`Tstruct` は新設の
+    `prim_vm_alloc_array`/`prim_vm_alloc_struct`(`initialiseVariable()` のTarray/
+    Tstructケースの移植: `CALLOC`+`newMemory`+`newArray`/`newStruct`、初期化子が
+    無ければ `randomise()` で「未初期化変数」検出も再現)を通し、それ以外
+    (ポインタ・数値型)は従来通り `prim_vm_coerce`。
+  - 配列初期化子(`{1,2,3}`、文字列リテラル)は各要素式(または各文字)をコンパイル時に
+    展開して `prim_vm_alloc_array` に渡す。
+  - `Member`: 新設の `prim_vm_member`/`prim_vm_store_member` は `eval()`/`assign()` の
+    Memberケースの素直な移植。
+  - **副次的に発見・修正したバグ**: ファイルスコープでの構造体宣言
+    (`struct Point { int x, y; };`)を含むテストで発覚。`replFile` の `-O` 経路は
+    トップレベルの各構文要素を `typeCheck()`/`preval()` に一切通さず直接
+    コンパイル+実行する(`Function`/`Primitive` は `compileOn` 内で自己
+    `typeCheck()` して補っていたが、素の `VarDecls` にはその補完が無かった)。
+    タグ宣言のみの `struct Point {...};` は構文上「変数名の無い宣言子」
+    (パーサの `nil` プレースホルダ)を1つ持つ `VarDecls` になり、typeCheckが
+    それを捨てて `declareTag()` で構造体タグを登録するという処理が一度も
+    走らないまま `compileOn` に到達し `expected Variable, got Undefined` で
+    fatal していた。「まだ型解決されていないか」を「先頭要素が `Variable` に
+    なっていないか」で判定し、必要なら自身に `typeCheck(exp, nil)` を実行してから
+    処理を続けるよう修正(タグ宣言のみで実変数が0個になるケースと、無限に
+    再typeCheckし続けてしまうケースを区別できるよう、判定条件を慎重に設計)。
+  - 追加テスト: `vm-local-array-ok.c`、`vm-struct-member-ok.c`。
+  - `./scripts/run-tests.sh` → 62 passed, 0 failed(修正前は60)。
+
+- **`d1d35aa`** — `Switch`/`Case`/`Default` とトップレベル `TypeDecls` を実装。
+  これで `compileOn()` の未実装ノードによるクラッシュは(今回の調査範囲では)ゼロになった。
+  - `Switch`: 条件式を一度だけ評価して隠しローカル変数(`"<switch-cond>"`、識別子として
+    構文的に出現し得ない名前)に格納し、各 `Case` の値との比較チェーン
+    (`iGETGVAR`+`iEQ`+`iJMPF`)で一致した本体位置へジャンプ。本体はフラットな
+    文リストとしてそのまま実行(C言語のフォールスルーがそのまま実現される)。
+    `continue` はswitchで捕まえず外側のループへ伝播、`break` は新しい `breaks`
+    リストで捕まえる(While/Forと同じ)。
+    **副次的に発見・修正したバグ**: 初回実装は `break` で終わる switch を1回
+    呼ぶたびにスタックが1個ずつリークした(`switch-ok.c` の
+    `classify()`/`fallthrough()` は全分岐が `break` で終わるため、複数回呼ぶと
+    "N items on stack at end of execution" で発覚)。`break` は自分の値をpushして
+    から脱出ラベルへジャンプするが、脱出ラベルの直後に「フォールスルーで自然に
+    文末へ到達した場合」用のpushが無条件で置かれていたため、break経由の到達だと
+    二重にpushされていた。3つの脱出経路(break/`Default`無しでの不一致/自然な
+    文末到達)がそれぞれ厳密に1回だけpushするよう修正。
+  - `TypeDecls`(`typedef long intptr_t;` 等、`#include <stdint.h>` 経由も含む):
+    `VarDecls` と同じ「トップレベルでは自己typeCheckが必要」というギャップ。
+    同じ判定手法(先頭要素が `TypeName` になっているか)で修正。
+  - 追加テスト: `vm-switch-ok.c`(フォールスルー・break・switch内のcontinueが
+    外側whileに伝播することを確認)。
+  - `./scripts/run-tests.sh` → 63 passed, 0 failed(修正前は62)。
+  - `demofiles/*.c`(63本)+`mydemo/*.c`(10本)、計73本を `-O` で実行する非公式な
+    網羅性スイープでは全73本が最後まで実行完了(調査開始時点は15/62)。
+
+- **既知の残課題**(`docs/design/vm-implementation-status.md` に詳細)、いずれも
+  「クラッシュしない」という今回の目標は達成しつつ、意図的に深追いしなかったもの:
+  VMにスコープ終了処理が無く `dangling-pointer.c` のようなバグは `-O` では検出されない、
+  VMの値/フレームスタックが固定32要素で `nfib(32)` 相当の深い再帰は `stack overflow`
+  する(`nfib(8)=67` は正しく計算できることを確認済み)、`typedef` を挟んだ複雑な
+  キャスト連鎖(`invalid-pointer.c`)とビットレベルのfloat/int型パニング
+  (`fisr.c`)は数値的な正確性まで踏み込めていない。

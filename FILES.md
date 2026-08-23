@@ -104,6 +104,17 @@
 | `vm-entry-point-ok.c` | `-O`(バイトコードVM)で `main()` が実際に実行され、`return` 値が終了コードになることの確認。 |
 | `vm-pointer-roundtrip-ok.c` | `-O` 経由で `malloc→書き込み→読み込み→free` が正しく動くことの確認(明示キャスト無し、void* 暗黙変換の回帰テストも兼ねる)。 |
 | `vm-use-after-free.c` | `-O` 経由でも use-after-free がツリーウォーカーと同じメッセージで検出されることの確認(Task 3 の核心デモ)。 |
+| `vm-while-loop-ok.c` | `-O` で `while` ループが正しく終了すること(`iJMPF` が `false` を `nil` と取り違え無限ループしていたバグの回帰テスト)。 |
+| `vm-if-false-branch-ok.c` | `-O` で `if` の false 分岐(`else`)が実際に実行されることの確認(同じ `iJMPF` バグの回帰テスト)。 |
+| `vm-cast-ok.c` | `-O` で明示的なポインタキャスト・数値キャストが動くことの確認。 |
+| `vm-for-loop-ok.c` | `-O` で `for` ループ(`continue`/`break` 込み)が正しく動くことの確認。 |
+| `vm-addressof-ok.c` | `-O` で `&x`(ローカル変数のアドレス取得)経由の読み書きが正しく動くことの確認。 |
+| `vm-increment-ok.c` | `-O` で `++`/`--`(前置・後置)が正しく動くことの確認。 |
+| `vm-logical-ops-ok.c` | `-O` で `&&`/`||`(短絡評価)が正しく動くことの確認。 |
+| `vm-pointer-arithmetic-ok.c` | `-O` でポインタ演算(`p+1`)とポインタ比較(NULLチェック・同一性比較)が正しく動くことの確認。 |
+| `vm-local-array-ok.c` | `-O` でローカル配列の宣言(初期化子あり/なし)と添字アクセスが正しく動くことの確認。 |
+| `vm-struct-member-ok.c` | `-O` で構造体宣言(初期化子あり/なし)とメンバアクセス(`s.field`)が正しく動くことの確認。 |
+| `vm-switch-ok.c` | `-O` で `switch`/`case`/`default`(フォールスルー・break・switch内のcontinueが外側ループに伝播すること)が正しく動くことの確認。 |
 | `evalasan.txt` | `demofiles/Makefile` の `asan_run` で記録した、AddressSanitizer による各バグパターンの実行結果ログ(比較用の参考資料)。 |
 | `evalvar.txt` | 同 `demo`(Valgrind)ターゲットで記録した実行結果ログ(比較用の参考資料)。 |
 | `Makefile` | `demofiles/*.c` を素の gcc / ASan / Valgrind でコンパイル・実行するための補助 Makefile(subc本体のインタプリタとは独立に、比較対象を作るためのもの)。 |

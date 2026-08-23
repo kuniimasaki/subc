@@ -2,78 +2,115 @@
 
 Task 3(`docs/design/task3-vm-audit-and-design.md`)でポインタ安全性フック(`prim_vm_deref`
 等)を実装した後、`-O` が実際にどこまでの C コードを実行できるかを `compileOn()` の全 AST
-ノード種別を対象に棚卸しし、`demofiles/*.c` 全件+`mydemo/*.c` 全件を `-O` で実行して実測した
-結果をまとめたもの。**この文書は現状のスナップショットであり、`compileOn()` に手を入れたら
-更新すること。**
+ノード種別を対象に棚卸しし、`demofiles/*.c`+`mydemo/*.c` 全件を `-O` で実行して実測、
+見つかったギャップを1つずつ埋めた記録。**この文書は現状のスナップショットであり、
+`compileOn()`/`execute()` に手を入れたら更新すること。**
 
-## 検証方法
+## 現在の状態(2026-08-23 時点)
 
-- `main.leg` の `compileOn(oop exp, oop program, oop cs, oop bs)` の `switch (getType(exp))`
-  を全ケース読み、`assert(!"unimplemented")` になっている枝を洗い出した。
-- `demofiles/*.c`(52本)+ `mydemo/*.c`(10本)、計62本を素朴に `./main -O <file>` で実行し、
-  正常終了/検出成功したものと、`compileOn` の `assert(!"unimplemented")` に当たって
-  `SIGABRT` したものを分類した。
-- ツリーウォーカー側(`-O` 無し)は `make test` で 52 passed, 0 failed を確認済み(本調査による
-  regressionなし)。
+`demofiles/*.c`(63本)+ `mydemo/*.c`(10本)、計73本を `-O` で実行した結果、
+**全73本が `compileOn()`/`execute()` レベルのクラッシュなく最後まで実行できる**
+(調査開始時点は15/62)。`make test` は63 passed, 0 failed(うち14本が`FLAGS=-O`の
+VM専用回帰テスト、`vm-*-ok.c`)。
 
-## 結果サマリ
-
-| 分類 | 件数 |
-|---|---|
-| `-O` で最後まで実行でき、期待通りの結果(検出成功 or 正常終了)だった | 15 / 62 |
-| `compileOn()` の `assert(!"unimplemented")` でインタプリタごと `SIGABRT` した | 47 / 62 |
-
-**重要な注意点**: 未実装ノードにヒットした場合、`fatal()` のような「行儀の良い」エラーではなく
-C レベルの `assert()` がそのまま失敗して `SIGABRT`(終了コード134)する。ツリーウォーカーが
-バグを検出したときのメッセージ(`"getting freed memory was not allowed"` 等)とは性質が異なり、
-**「バグを検出した」のではなく「VMがそのコードをコンパイルできず落ちた」**という区別が必要。
-現状 `-O` で通ったテストのうち、実際に意図した安全性チェックが発火したのは
-`vm-use-after-free.c` の1本のみ(他はキャスト等を使わない単純な正常系)。
+以下、実装済みの機能と、判明している既知の残課題をまとめる。
 
 ## `compileOn()` のASTノード網羅状況(`_do_types` 55種)
 
 | 状態 | ノード | 備考 |
 |---|---|---|
-| ✅ 実装済み | `Undefined`, `Input`, `Integer`, `Float`, `Symbol`, `Pair`, `String`, `Closure`, `Call`, `Block`, `Dereference`, `Sizeof`, `Index`, `While`, `If`, `Return`, `Continue`, `Break`, `VarDecls`, `Function`, `Primitive` | Task 3までに実装。`Dereference`/`Index`/ポインタ代入は `prim_vm_*` 安全性フック経由。 |
-| ✅ 実装済み(演算子単位) | `Unary` の `NEG`/`NOT`/`COM` | 単項マイナス・論理否定・ビット否定。 |
-| ✅ 実装済み(演算子単位) | `Binary` の `MUL DIV MOD ADD SUB SHL SHR LT LE GE GT EQ NE BAND BXOR BOR` | 短絡評価が要らない二項演算子は全部実装済み。 |
-| ❌ 未実装(実際に踏む) | `Cast` | 明示的なポインタキャスト `(int *)malloc(...)` など。**最大のボトルネック**。malloc系のテストのほぼ全てがこれで落ちる。 |
-| ❌ 未実装(実際に踏む) | `Addressof` (`&x`) | `dangling-pointer.c` 等で使用。 |
-| ❌ 未実装(実際に踏む) | `Unary` の `PREINC PREDEC POSTINC POSTDEC` (`++`/`--`) | `break-in-if-ok.c` 等、非常によく使われる。 |
-| ❌ 未実装(実際に踏む) | `Binary` の `LAND LOR` (`&&`/`\|\|`、短絡評価) | `modulo-and-bitwise-ok.c`。 |
-| ❌ 未実装(実際に踏む) | `For` | `char-buffer-oob.c`、`memory-leak.c` 等、ループを使うテストの大半。 |
-| ❌ 未実装(実際に踏む) | `Switch` / `Case` / `Default` | `switch-ok.c`。 |
-| ❌ 未実装(実際に踏む) | `Member` (`s.field`) | 構造体フィールドアクセス。踏んだテストは無いが `struct-null-pointer-field.c` 相当のコードは通らない。 |
-| ❌ 未実装(実際に踏む) | `List`(配列初期化子リスト `{1,2,3}`) | `out-of-bounds-access.c`、`pointer-compare.c` 等。 |
-| ❌ 未実装(実際に踏む) | `TypeDecls` | トップレベルの `typedef`/複数宣言。`invalid-pointer.c`、`fisr.c` が使用。 |
-| ⚠️ 未実装だが通常は踏まない(データ値/パース時専用) | `Array`, `Pointer`, `Struct`, `Memory`, `Reference`, `Tvoid`..`Tetc`(11種), `Scope`, `TypeName`, `Variable`, `Constant`, `Token` | これらは「実行対象のASTノード」としてではなく、他ノードのフィールド(型情報・実行時値)として扱われるため、`compileOn()` が直接呼ばれる経路が(現状把握している限り)存在しない。**ただし未検証** — 別の構文パターンで踏む可能性は残る。 |
+| ✅ 実装済み | `Undefined`, `Input`, `Integer`, `Float`, `Symbol`, `Pair`, `String`, `Closure`, `Call`, `Block`, `Dereference`, `Sizeof`, `Index`, `While`, `For`, `If`, `Switch`/`Case`/`Default`, `Return`, `Continue`, `Break`, `VarDecls`, `TypeDecls`, `Function`, `Primitive`, `Addressof`, `Cast`, `Member` | `Dereference`/`Index`/`Cast`/`Addressof`/`Member`/ポインタ代入・メンバ代入は全て `prim_vm_*` プリミティブ経由(Option B、ツリーウォーカーの既存関数をそのまま再利用)。`VarDecls`/`TypeDecls` はトップレベル出現時に自己 `typeCheck()` する(下記参照)。 |
+| ✅ 実装済み(演算子単位) | `Unary` の `NEG`/`NOT`/`COM`/`PREINC`/`PREDEC`/`POSTINC`/`POSTDEC` | `++`/`--` は `prim_vm_incrdecr` 経由。 |
+| ✅ 実装済み(演算子単位) | `Binary` の全演算子(`MUL DIV MOD ADD SUB SHL SHR LT LE GE GT EQ NE BAND BXOR BOR LAND LOR`) | `LAND`/`LOR` は短絡評価(JMPF/JMPによる制御フロー)。`ADD` はポインタ/配列+整数のポインタ演算に対応。比較演算子は `compare()`/`equal()` 経由(下記のiJMPF/比較バグ参照)。 |
+| ⚠️ 未実装だが通常は踏まない(データ値/パース時専用) | `Array`, `Pointer`, `Struct`, `Memory`, `Reference`, `Tvoid`..`Tetc`(11種), `Scope`, `TypeName`, `Variable`, `Constant`, `Token` | これらは「実行対象のASTノード」としてではなく、他ノードのフィールド(型情報・実行時値)として扱われるため、`compileOn()` が直接呼ばれる経路は無い。**未検証** — 別の構文パターンで踏む可能性は残る。 |
 
-## `compileOn()` を通過しても壊れている既知の追加バグ
+## 実装の勘所
 
-`assert` に当たらず実行はできるが、C の意味論と食い違う挙動を確認したもの:
+- **`Cast`**: `Cast,converter` は typeCheck が確定させる生の C 関数ポインタ(`cvt_t`)で、
+  VMのスタックには乗せられない。`compileOn` は値ではなく `Cast` ノード自身を第2引数として
+  `prim_vm_cast` に渡し、`get(castExp, Cast,converter)` で同じ関数ポインタに到達する
+  (`eval()` のCastケースの完全なミラー)。
+- **`Addressof`/ローカル変数の実体化**: `&x` がローカル変数を指すには、VMの `env`
+  (ただの `(symbol . value)` alist)にも「ツリーウォーカーの `Variable` オブジェクト」に
+  相当する箱が必要だった。`iDECL` と `iCALL` のパラメータ束縛を、値を直接conすのではなく
+  呼び出しごとに新しい `Variable` オブジェクトでラップするように変更(再帰呼び出しが
+  互いを壊さないよう、毎回フレッシュに生成)、`iGETGVAR`/`iSETGVAR` も `Variable,value`
+  経由に変更。これで `getPointer`/`setPointer` の既存の `case Variable:` がVMのローカルにも
+  無変更で効くようになった。
+- **ローカル配列/構造体の実体確保**: `VarDecls` は宣言された型で分岐し、`Tarray`/`Tstruct`
+  は `prim_vm_alloc_array`/`prim_vm_alloc_struct`(`initialiseVariable()` のTarray/Tstruct
+  ケースの移植、`CALLOC`+`newMemory`+`newArray`/`newStruct`+初期化子代入、初期化式が
+  無ければ `randomise()` で「未初期化変数」検出も再現)を通す。それ以外(ポインタ・数値型)は
+  従来通り `prim_vm_coerce`。
+- **配列初期化子リスト** (`{1,2,3}`, `"literal"`): 各要素式(または文字列の各文字)を
+  コンパイル時に展開して `prim_vm_alloc_array` に渡す。
+- **`Switch`/`Case`/`Default`**: 条件式を一度だけ評価して隠しローカル変数
+  (`"<switch-cond>"`、識別子として構文的に出現し得ない名前なので衝突しない)に格納し、
+  各 `Case` の値との比較チェーン(`iGETGVAR`+`iEQ`+`iJMPF`)で一致した本体位置へジャンプ。
+  本体はフラットな文リストとしてそのまま実行(C言語のフォールスルーがそのまま実現される)。
+  `continue` はswitchでは捕まえず(`cs` をそのまま body に渡す)外側のループへ伝播、
+  `break` は新しい `breaks` リストで捕まえる(While/Forと同じ)。
+- **`Member`**: `prim_vm_member`/`prim_vm_store_member` は `eval()`/`assign()` の Member
+  ケースの素直な移植(`Tstruct,members` から名前でオフセット・型を検索し `getMemory`/
+  `setMemory`)。
+- **トップレベル `VarDecls`/`TypeDecls` の自己 typeCheck**: `replFile` の `-O` 経路は
+  トップレベルの各構文要素を `typeCheck()`/`preval()` に一切通さず直接 `compile`+`execute`
+  する(`Function`/`Primitive` は `compileOn` 内で自己 `typeCheck()` して補っていたが、
+  素の `VarDecls`(グローバル変数、あるいは `struct Point { int x, y; };` のような
+  タグ宣言のみの宣言)と `TypeDecls`(`typedef`)には同様の補完が無かった)。
+  「まだ型解決されていないか」を「先頭要素が期待する型(`Variable`/`TypeName`)になって
+  いないか」で判定し、必要なら自身に `typeCheck(exp, nil)` を実行してから処理を続ける
+  ように修正。
 
-- **ローカル配列/構造体の宣言が初期値なしだと `nil` にバインドされる**: `VarDecls` の実装は
-  `prim_vm_coerce` を通すが、これは `Tpointer` の場合しか特別扱いしない(Task 3 で実装した
-  `int *p = malloc(...)` 用のポインタ型強制のみ)。`int a[3];` のように初期化式が無い配列/構造体
-  宣言は `init` が `nil` のまま `iDECL` され、実際の `Array`/`Struct` オブジェクトが確保されない。
-  検証: `int a[3]; a[0]=1; return a[0];` を `-O` で実行すると
-  `cannot index-assign type Undefined` で fatal する(クラッシュではなく、ツリーウォーカーの
-  `initialiseVariable()` が本来やっている「宣言時に実体を確保する」処理が VM 側に無いことが原因)。
-  ツリーウォーカー(`-O` 無し)では同じコードは正しく動作する。
+## 見つけて直した、クラッシュではない静かなバグ
 
-## 優先度付きの残作業(参考: 出現頻度ベース)
+- **`iJMPF` が `nil` としか比較しておらず、`false` を認識できなかった**: `false` の実体は
+  `newInteger(0)`(`nil` とは別オブジェクト)。比較・論理演算子は常に `true`/`false` を
+  積むため、`iJMPF` の分岐は事実上一度も発火せず、`while` の本体が1回でも実行されると
+  無限ループしていた(`assert(!"unimplemented")` の検知網に引っかからない、実行時に
+  ハングするだけの静かなバグ)。`isFalse(cond)` を使うよう修正。`If` の false 分岐にも
+  同じ効果があった(修正前は分岐そのものが機能していなかった)。
+- **ポインタの加算・比較が `integerValue()` に丸投げされていた**: `execute()` の
+  `iADD`/`iLT`/`iLE`/`iGE`/`iGT`/`iEQ`/`iNE` は `eval()` のBinaryケースと違い、
+  ポインタ/配列を一切考慮せず常に `integerValue()`/`floatValue()` を呼んでいた
+  (`assert(ptr != 0)` のようなごく普通のNULLチェックが `cannot convert Pointer to
+  integer` で fatal していた)。`iADD` はポインタ/配列+整数のポインタ演算に対応、
+  比較演算子は `compare()`/`equal()` 経由に修正(`eval()` と同じ経路)。
+- **`Switch` の初期実装がbreak経路でスタックリークしていた**: `break` は自分の値を
+  push してからジャンプするが、ジャンプ先(switch脱出ラベル)の直後に「フォールスルーで
+  自然に文末へ到達した場合」用のpushが無条件で置かれており、break経由の到達だと
+  二重にpushされていた。3つの脱出経路(break/`Default`無しでの不一致/自然な文末到達)が
+  それぞれ厳密に1回だけpushするよう修正。
 
-`demofiles/*.c` 52本中で実際にクラッシュの原因になった行数を集計した結果、直すインパクトが
-大きい順に並べると:
+## 既知の残課題(意図的に今回は追わなかったもの)
 
-1. **`Cast`** — 圧倒的多数(malloc系テストほぼ全て)。実装すれば一気に通過数が増える。
-2. **`For`** — ループを使うテストの大半。
-3. **`Addressof`** / **`++`/`--`** — dangling-pointer系、カウンタ変数の更新で頻出。
-4. **配列初期化子(`List`)** / **ローカル配列・構造体の実体確保** — 上記の追加バグと合わせて対応が必要。
-5. **`Switch`**、**`Member`**、**`LAND`/`LOR`**、**`TypeDecls`** — 個別のテスト1〜2本ずつ。
+- **VM は明示的なスコープ終了処理を持たない**: `demofiles/dangling-pointer.c` の
+  「関数を抜けたローカル変数のアドレスを返す」というバグは、ツリーウォーカーでは
+  `Scope_end()` が該当 `Variable` を `isdead` にマークすることで検出されるが、
+  VMの `env` にはスコープ終了処理という概念自体が無いため、`-O` ではこのバグが
+  検出されずに正常終了してしまう。VMにスコープ終了処理を持ち込むのは今回のスコープを
+  超える別作業。
+- **VMの値/フレームスタックは固定32要素**(`oop stack[32]`、`struct Frame frames[32]`)
+  で、溢れると `exit(1)` するのみ。`mydemo/fib.c` の `nfib(32)` は(iJMPF修正で
+  ようやく本物の再帰になったことで)実際にこの上限を超えて `stack overflow` する
+  (`nfib(8)=67` は正しく計算できることを確認済み)。動的に伸びるスタックへの
+  変更は別作業。
+- **`(int*)(intptr_t)0xDeadD0d0` のような typedef を挟んだキャスト連鎖**
+  (`demofiles/invalid-pointer.c`)は、`-O` 経由だとどこかで `Pointer` ではなく
+  生の `Integer` になってしまい、`printf("%p", ...)` がツリーウォーカーの
+  「不正な書き込み」検出に到達する前に別のエラーで止まる。この特定の複雑な
+  キャスト連鎖のみで発生し、この1ファイル以外には影響しない。
+- **`mydemo/fisr.c`(高速逆平方根)はクラッシュしなくなったが数値が正しくない**:
+  ビットレベルの float/int 型パニングが `-O` 経由では忠実に再現されていない
+  (クラッシュはしない、という Task の目的自体は達成しているが、この特定の
+  高度な構文の数値的な正確性までは踏み込んでいない)。
 
-`docs/design/task3-vm-audit-and-design.md` が推奨した Option B(`prim_*` 経由で安全性チェックを
-一本化する)方針は上記いずれについても踏襲可能(`Cast` は `castPointer()`/`converter()` を呼ぶ
-プリミティブに、`For` は `While` の展開に、ローカル配列/構造体は `initialiseVariable()` 相当の
-ロジックを呼ぶプリミティブに、という形で拡張できる想定)。次にVM対応を進める場合はこの表を
-更新すること。
+## 検証方法
+
+- `main.leg` の `compileOn(oop exp, oop program, oop cs, oop bs)` の
+  `switch (getType(exp))` を全ケース読み、未実装/バグの箇所を洗い出した。
+- `demofiles/*.c`+`mydemo/*.c` を素朴に `./main -O <file>` で実行し、正常終了したもの、
+  検出成功したもの、`assert(!"unimplemented")` でクラッシュしたものを分類。
+  静かなバグ(ハング、誤った結果)は個別のテストプログラムで手動確認
+  (`while`ループの反復回数を変えたテスト、gdbでの `fatal()` へのブレークポイント等)。
+- ツリーウォーカー側(`-O` 無し)は各コミットごとに `make test` で回帰確認。
