@@ -11841,7 +11841,7 @@ oop execute(oop program)
 	    case iJMPF:	{
 		int dest = _integerValue(code[pc++]);
 		oop cond = pop();
-		if (nil == cond) pc = dest;
+		if (isFalse(cond)) pc = dest;
 		continue;
 	    }
 	}
