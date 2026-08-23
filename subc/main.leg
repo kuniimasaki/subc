@@ -3657,6 +3657,97 @@ oop prim_vm_coerce(int argc, oop *argv, oop env)
     return value;
 }
 
+// Cast,converter is a raw C function pointer (cvt_t), resolved once by
+// typeCheck() and stashed directly on the Cast AST node -- it cannot be
+// pushed onto the VM's oop-only stack as a value. Since the Cast node
+// itself is a perfectly ordinary oop, compileOn's Cast case pushes it
+// (not its converter) as prim_vm_cast's second argument, and this just
+// mirrors eval()'s own Cast case: `get(castExp, Cast,converter)` reaches
+// the exact same precomputed function pointer, applied to the exact same
+// Cast,type -- no conversion logic is reimplemented here.
+oop prim_vm_cast(int argc, oop *argv, oop env)
+{
+    if (argc != 2) fatal("internal: prim_vm_cast wrong arity");
+    oop rhs = argv[0], castExp = argv[1];
+    cvt_t cvt = get(castExp, Cast,converter);		assert(cvt);
+    oop  type = get(castExp, Cast,type);
+    rhs = cvt(rhs);
+    switch (getType(type)) {
+	case Tpointer: {
+	    if (is(Pointer,rhs)) return castPointer(rhs, type);
+	    default: break;
+	}
+    }
+    return cvt(rhs);
+}
+
+// Addressof (`&x`) must NOT evaluate its operand the normal way (that
+// would read x's current *value*, not produce a pointer to its storage
+// cell) -- compileOn's Addressof case switches on getType(rhs) at compile
+// time instead, exactly mirroring eval()'s own Addressof case, and pushes
+// whatever each shape needs as raw (unevaluated) data for these two
+// primitives to resolve at runtime.
+//
+// For a plain symbol, this needs the *box* backing it in the current
+// call frame -- an env-local's Variable box (see iDECL/iCALL's parameter
+// binding above) or, for a global/extern, the same Variable declare()
+// registered -- so this is the one prim_vm_* that actually needs the real
+// VM environment, not the always-nil `env` every other primitive call
+// ignores; iCALL's Primitive case was changed to pass it through.
+oop prim_vm_addressof_symbol(int argc, oop *argv, oop env)
+{
+    if (argc != 1) fatal("internal: prim_vm_addressof_symbol wrong arity");
+    oop sym = argv[0];
+    oop keyval = assoc(env, sym);
+    oop variable = keyval ? get(keyval, Pair,tail) : Scope_lookup(sym);
+    if (!variable || !is(Variable, variable)) fatal("cannot take address: %s", get(sym, Symbol,name));
+    oop type = get(variable, Variable,type);
+    if (is(Tarray, type)) return get(variable, Variable,value);
+    return newPointer(newTpointer(type), variable, 0);
+}
+
+// For `&array[index]`: compileOn already evaluates both the array (as an
+// ordinary rvalue -- an Array object) and the index normally, so this one
+// needs no special runtime lookup, just the same construction eval()'s
+// Addressof/Index case does.
+oop prim_vm_addressof_index(int argc, oop *argv, oop env)
+{
+    if (argc != 2) fatal("internal: prim_vm_addressof_index wrong arity");
+    oop base = argv[0], idx = argv[1];
+    if (!is(Integer, idx)) fatal("array index is not 'int'");
+    if (!is(Array, base)) fatal("cannot take address of index into %s", getTypeName(base));
+    oop type = get(base, Array,type);
+    oop mem  = get(base, Array,base);
+    return newPointer(newTpointer(get(type, Tarray,target)), mem, _integerValue(idx));
+}
+
+// `++x`/`--x`/`x++`/`x--`: like Addressof, the operand must not be
+// evaluated the normal way -- compileOn's Unary case pushes the raw
+// symbol (needing the real env, same as prim_vm_addressof_symbol) plus
+// the Unary AST node itself (so the operator, a plain C enum baked into
+// the node rather than an oop, is readable here) instead of compiling
+// rhs as an rvalue.
+oop prim_vm_incrdecr(int argc, oop *argv, oop env)
+{
+    if (argc != 2) fatal("internal: prim_vm_incrdecr wrong arity");
+    oop sym = argv[0], unaryExp = argv[1];
+    oop keyval = assoc(env, sym);
+    oop variable = keyval ? get(keyval, Pair,tail) : Scope_lookup(sym);
+    if (!variable || !is(Variable, variable))
+	fatal("illegal increment operation: %s", get(sym, Symbol,name));
+    oop value = get(variable, Variable,value);
+    oop result = value;
+    switch (get(unaryExp, Unary,operator)) {
+	case PREINC:  result = value = incr(value,  1);	break;
+	case PREDEC:  result = value = incr(value, -1);	break;
+	case POSTINC: result = value;  value = incr(value,  1);	break;
+	case POSTDEC: result = value;  value = incr(value, -1);	break;
+	default: fatal("internal: prim_vm_incrdecr bad operator");
+    }
+    set(variable, Variable,value, value);
+    return result;
+}
+
 oop assign(oop lhs, oop rhs)
 {
     oop dst = lhs;
@@ -4772,7 +4863,27 @@ oop execute(oop program)
 		    push(IBINOP(lhs, %, rhs));
 		continue;
 	    }
-	    case iADD: BINOP(+);
+	    case iADD: {
+		// mirrors eval()'s Binary/ADD case: pointer/array + int is
+		// pointer arithmetic, not plain integer addition. Unlike
+		// eval(), this is the only arithmetic opcode that needs the
+		// special case -- SUB has none in eval() either (pointer
+		// difference isn't supported there, so it isn't here).
+		oop rhs = pop(), lhs = pop();
+		if (is(Pointer, lhs) && is(Integer, rhs)) {
+		    oop type   = get(lhs, Pointer,type);
+		    oop base   = get(lhs, Pointer,base);
+		    int offset = get(lhs, Pointer,offset) + _integerValue(rhs);
+		    push(newPointer(type, base, offset));
+		}
+		else if (is(Array, lhs) && is(Integer, rhs)) {
+		    oop type = newTpointer(get(get(lhs, Array,type), Tarray,target));
+		    push(newPointer(type, get(lhs, Array,base), _integerValue(rhs)));
+		}
+		else if (is(Float, lhs) || is(Float, rhs)) push(FBINOP(lhs, +, rhs));
+		else                                        push(IBINOP(lhs, +, rhs));
+		continue;
+	    }
 	    case iSUB: BINOP(-);
 #          undef BINOP
 #          define BINOP(OP) {				\
@@ -4786,26 +4897,41 @@ oop execute(oop program)
 	    case iXOR:	BINOP(^);
 	    case iOR:	BINOP(|);
 #          undef BINOP
-#          define BINOP(OP) {									\
+	    // Mirror eval()'s Binary case exactly: with a Float operand,
+	    // compare as floats; otherwise go through the same compare()/
+	    // equal() the tree-walker uses (needed for Pointer operands --
+	    // e.g. `ptr != 0` or `ptr1 == ptr2` -- which plain integerValue()
+	    // cannot handle at all).
+#          define RELOP(OP) {								\
 		    oop rhs = pop(), lhs = pop();						\
 		    if (is(Float, lhs) || is(Float, rhs))					\
 			push(floatValue(lhs) OP floatValue(rhs) ? true : false);		\
 		    else									\
-			push(integerValue(lhs) OP integerValue(rhs) ? true : false);		\
+			push(compare(lhs, rhs) OP 0 ? true : false);				\
 		    continue;									\
 		}
-	    case iLT:	BINOP(< );
-	    case iLE:	BINOP(<=);
-	    case iGE:	BINOP(>=);
-	    case iGT:	BINOP(> );
-	    case iEQ:	BINOP(==);
-	    case iNE:	BINOP(!=);
-#          undef BINOP
+	    case iLT:	RELOP(< );
+	    case iLE:	RELOP(<=);
+	    case iGE:	RELOP(>=);
+	    case iGT:	RELOP(> );
+#          undef RELOP
+	    case iEQ: {
+		oop rhs = pop(), lhs = pop();
+		if (is(Float, lhs) || is(Float, rhs)) push(floatValue(lhs) == floatValue(rhs) ? true : false);
+		else                                   push(equal(lhs, rhs) ? true : false);
+		continue;
+	    }
+	    case iNE: {
+		oop rhs = pop(), lhs = pop();
+		if (is(Float, lhs) || is(Float, rhs)) push(floatValue(lhs) != floatValue(rhs) ? true : false);
+		else                                   push(equal(lhs, rhs) ? false : true);
+		continue;
+	    }
 	    case iGETGVAR: {
 		oop operand = code[pc++];
 		oop keyval  = assoc(env, operand);
 		if (nil != keyval) {
-		    push(get(keyval, Pair,tail));
+		    push(get(get(keyval, Pair,tail), Variable,value));
 		    continue;
 		}
 		oop val = get(operand, Symbol,value);
@@ -4832,19 +4958,32 @@ oop execute(oop program)
 		oop operand = code[pc++];
 		oop keyval  = assoc(env, operand);
 		if (nil != keyval) {
-		    set(keyval, Pair,tail, top);
+		    set(get(keyval, Pair,tail), Variable,value, top);
 		    continue;
 		}
 		set(operand, Symbol,value, top);
 		continue;
 	    }
 	    case iDECL: {
-		// introduces a new local: pops the initial value and conses
-		// (symbol . value) onto the current lexical environment, so
-		// later iGETGVAR/iSETGVAR of the same symbol in this scope
-		// find it via assoc() before falling back to Symbol,value
+		// introduces a new local: pops the initial value, wraps it in
+		// a fresh Variable box (name/type read from the VarDecls-
+		// resolved Variable template compileOn passes as the operand
+		// -- a fresh object per iDECL execution, not the template
+		// itself, so recursive calls each get their own independent
+		// box), and conses (symbol . box) onto the current lexical
+		// environment. Boxing in a Variable (rather than storing the
+		// raw value directly) mirrors exactly how the tree-walker's
+		// own locals are represented, so Addressof's prim_vm_* helper
+		// can hand out a real Pointer{base=<this Variable>} for
+		// `&localvar` using the exact same getPointer/setPointer
+		// machinery as a global's address -- no separate "pointer to
+		// a raw env pair" case needed anywhere. `operand` is the
+		// VarDecls-resolved Variable template (name+type); later
+		// iGETGVAR/iSETGVAR of the same symbol in this scope find
+		// the fresh box via assoc() before falling back to Symbol,value.
 		oop operand = code[pc++];
-		env = newPair(newPair(operand, pop()), env);
+		oop box = newVariable(get(operand, Variable,name), get(operand, Variable,type), pop(), 0);
+		env = newPair(newPair(get(operand, Variable,name), box), env);
 		continue;
 	    }
 	    case iCLOSE: {
@@ -4857,7 +4996,7 @@ oop execute(oop program)
 		oop func = pop();
 		switch (getType(func)) {
 		    case Primitive: {
-			oop result = get(func, Primitive,function)(argc, stack + sp, nil);
+			oop result = get(func, Primitive,function)(argc, stack + sp, env);
 			sp += argc; // pop all arguments
 			push(result);
 			continue; // next instruction
@@ -4869,12 +5008,22 @@ oop execute(oop program)
 			int      parc        = get(parameters, List,size);
 			oop *parv        = get(parameters, List,elements);
 			int      parn        = 0;
+			// each parameter is boxed in a fresh Variable (same reason
+			// as iDECL: so &param produces a real Pointer{base=Variable}
+			// via the same getPointer/setPointer path as any other
+			// addressable variable, and so a recursive call's parameters
+			// don't alias an outer call's).
 			while (parn < parc && argc > 0) {
-			    environment = newPair(newPair(get(parv[parn++], Variable,name), pop()), environment);
+			    oop pv = parv[parn++];
+			    oop box = newVariable(get(pv, Variable,name), get(pv, Variable,type), pop(), 0);
+			    environment = newPair(newPair(get(pv, Variable,name), box), environment);
 			    --argc;
 			}
-			while (parn < parc)
-			    environment = newPair(newPair(get(parv[parn++], Variable,name), nil), environment);
+			while (parn < parc) {
+			    oop pv = parv[parn++];
+			    oop box = newVariable(get(pv, Variable,name), get(pv, Variable,type), nil, 0);
+			    environment = newPair(newPair(get(pv, Variable,name), box), environment);
+			}
 			sp += argc;
 			if (fp < 1) fatal("too many function calls");
 			--fp;
@@ -4978,7 +5127,30 @@ void compileOn(oop exp, oop program, oop cs, oop bs)
 	    compileOn(exps[size - 1], program, cs, bs);
 	    return;
 	}
-	case Addressof:		assert(!"unimplemented");
+	case Addressof: {
+	    oop rhs = get(exp, Addressof,rhs);
+	    switch (getType(rhs)) {
+		case Symbol: {
+		    static oop p_addrsym = 0;
+		    if (!p_addrsym) p_addrsym = newPrimitive(intern("&x"), nil, nil, prim_vm_addressof_symbol);
+		    EMITio(iPUSH, rhs);		// the symbol itself, NOT iGETGVAR'd -- do not evaluate it
+		    EMITio(iPUSH, p_addrsym);
+		    EMITii(iCALL, 1);
+		    return;
+		}
+		case Index: {
+		    static oop p_addridx = 0;
+		    if (!p_addridx) p_addridx = newPrimitive(intern("&a[i]"), nil, nil, prim_vm_addressof_index);
+		    compileOn(get(rhs, Index,rhs), program, cs, bs);	// index (argv[1]) pushed first
+		    compileOn(get(rhs, Index,lhs), program, cs, bs);	// array (argv[0]) pushed last
+		    EMITio(iPUSH, p_addridx);
+		    EMITii(iCALL, 2);
+		    return;
+		}
+		default:
+		    fatal("cannot take address: %s", toString(exp));
+	    }
+	}
 	case Dereference: {
 	    static oop p_deref = 0;
 	    if (!p_deref) p_deref = newPrimitive(intern("*p"), nil, nil, prim_vm_deref);
@@ -4994,23 +5166,62 @@ void compileOn(oop exp, oop program, oop cs, oop bs)
 	    return;
 	}
 	case Unary: {
+	    switch (get(exp, Unary,operator)) {
+		case PREINC: case PREDEC: case POSTINC: case POSTDEC: {
+		    oop rhs = get(exp, Unary,rhs);
+		    if (!is(Symbol, rhs)) fatal("illegal increment operation: %s", toString(exp));
+		    static oop p_incrdecr = 0;
+		    if (!p_incrdecr) p_incrdecr = newPrimitive(intern("++/--"), nil, nil, prim_vm_incrdecr);
+		    EMITio(iPUSH, exp);		// the Unary node itself (argv[1]), pushed first
+		    EMITio(iPUSH, rhs);		// the symbol, NOT iGETGVAR'd (argv[0]), pushed last
+		    EMITio(iPUSH, p_incrdecr);
+		    EMITii(iCALL, 2);
+		    return;
+		}
+		default: break;
+	    }
 	    compileOn(get(exp, Unary,rhs), program, cs, bs);
 	    switch (get(exp, Unary,operator)) {
 		case NEG:	EMITi(iNEG);	return;
 		case NOT:	EMITi(iNOT);	return;
 		case COM:	EMITi(iCOM);	return;
-		case PREINC:	assert(!"unimplemented");
-		case PREDEC:	assert(!"unimplemented");
-		case POSTINC:	assert(!"unimplemented");
-		case POSTDEC:	assert(!"unimplemented");
+		default:	break;
 	    }
 	    break;
 	}
 	case Binary: { // MUL{op, lhs, rhs}
-	    switch (get(exp, Binary,operator)) {
-		case LAND:	assert(!"unimplemented");
-		case LOR:	assert(!"unimplemented");
-		default:	break;
+	    // LAND/LOR short-circuit (mirrors eval()'s Binary case: `a && b`
+	    // is `isFalse(a) ? false : b` -- b's *raw* value, not coerced to
+	    // a boolean -- and `a || b` is `isTrue(a) ? true : b`), so they
+	    // cannot share the eager evaluate-both-sides-then-combine shape
+	    // every other Binary operator below uses.
+	    if (LAND == get(exp, Binary,operator)) {
+		compileOn(get(exp, Binary,lhs), program, cs, bs);
+		int j1 = get(program, List,size);
+		EMITio(iJMPF, nil);	// iJMPF pops lhs's value itself -- no extra iPOP needed
+		compileOn(get(exp, Binary,rhs), program, cs, bs);
+		int j2 = get(program, List,size);
+		EMITio(iJMP, nil);
+		int l1 = get(program, List,size);
+		EMITio(iPUSH, false);
+		int l2 = get(program, List,size);
+		List_set(program, j1+1, newInteger(l1));
+		List_set(program, j2+1, newInteger(l2));
+		return;
+	    }
+	    if (LOR == get(exp, Binary,operator)) {
+		compileOn(get(exp, Binary,lhs), program, cs, bs);
+		int j1 = get(program, List,size);
+		EMITio(iJMPF, nil);
+		EMITio(iPUSH, true);
+		int j2 = get(program, List,size);
+		EMITio(iJMP, nil);
+		int l1 = get(program, List,size);
+		compileOn(get(exp, Binary,rhs), program, cs, bs);
+		int l2 = get(program, List,size);
+		List_set(program, j1+1, newInteger(l1));
+		List_set(program, j2+1, newInteger(l2));
+		return;
 	    }
 	    compileOn(get(exp, Binary,lhs), program, cs, bs);
 	    compileOn(get(exp, Binary,rhs), program, cs, bs);
@@ -5033,7 +5244,7 @@ void compileOn(oop exp, oop program, oop cs, oop bs)
 		case BOR:	EMITi(iOR);	return;
 		case LAND:
 		case LOR:
-		    assert(!"unimplemented");
+		    assert(!"this cannot happen"); // handled above, before eager evaluation
 	    }
 	}
 	case Index: {
@@ -5078,7 +5289,12 @@ void compileOn(oop exp, oop program, oop cs, oop bs)
 	}
 
 	case Cast: {
-	    assert(!"unimplemented");
+	    static oop p_cast = 0;
+	    if (!p_cast) p_cast = newPrimitive(intern("(cast)"), nil, nil, prim_vm_cast);
+	    EMITio(iPUSH, exp);					// the Cast node itself (argv[1]), pushed first
+	    compileOn(get(exp, Cast,rhs), program, cs, bs);	// value (argv[0]), pushed last
+	    EMITio(iPUSH, p_cast);
+	    EMITii(iCALL, 2);
 	    return;
 	}
 
@@ -5107,7 +5323,42 @@ void compileOn(oop exp, oop program, oop cs, oop bs)
 	    return;
 	}
 	case For: {
-	    assert(!"unimplemented");
+	    // Same push/pop bookkeeping as While (see comment above), plus a
+	    // separate update ("step") stage that continue must reach without
+	    // skipping. Every one of body/step/continue/break leaves exactly
+	    // one value on the stack at its exit point (the statement-value
+	    // convention every compileOn case follows), so L3 (the
+	    // continue-target, right before step) and L2 (the break-target /
+	    // loop-exit) both always see exactly one extra value sitting
+	    // there, which the next cycle (or nobody, at L2) is responsible
+	    // for discarding -- keeping per-iteration stack depth constant.
+	    oop init = get(exp, For,initialiser);
+	    oop cond = get(exp, For,condition);
+	    oop step = get(exp, For,update);
+	    oop body = get(exp, For,body);
+	    oop continues = newList();
+	    oop breaks    = newList();
+	    compileOn(init, program, cs, bs);
+	    EMITi(iPOP);			// init runs once, outside the loop; discard its statement-value
+	    EMITio(iPUSH, nil);		// baseline "for" statement value if the body never runs
+	    LABEL(L1);
+	    compileOn(cond, program, cs, bs);
+	    LABEL(J1);
+	    EMITio(iJMPF, nil);
+	    EMITi(iPOP);
+	    compileOn(body, program, continues, breaks);
+	    LABEL(L3);			// continue jumps here: run step, skipping the rest of body
+	    EMITi(iPOP);		// discard body's (or continue's) leftover value
+	    compileOn(step, program, cs, bs);
+	    EMITi(iPOP);		// discard step's own statement-value
+	    EMITio(iPUSH, nil);
+	    EMITii(iJMP, L1);
+	    LABEL(L2);
+	    PATCH(J1, L2);
+	    for (int i = get(continues, List,size);  i--;)
+		PATCH(_integerValue(get(continues, List,elements)[i]), L3);
+	    for (int i = get(breaks, List,size);  i--;)
+		PATCH(_integerValue(get(breaks, List,elements)[i]), L2);
 	    return;
 	}
 	case If: {
@@ -5181,7 +5432,6 @@ void compileOn(oop exp, oop program, oop cs, oop bs)
 	    oop *velts = get(vars, List,elements);
 	    for (int i = 0;  i < n;  ++i) {
 		oop var  = velts[i];
-		oop name = get(var, Variable,name);
 		oop type = get(var, Variable,type);
 		oop init = get(var, Variable,value);
 		EMITio(iPUSH, type); // pushed first -> ends up as argv[1] (type)
@@ -5189,7 +5439,7 @@ void compileOn(oop exp, oop program, oop cs, oop bs)
 		else compileOn(init, program, cs, bs); // pushed last -> argv[0] (value)
 		EMITio(iPUSH, p_coerce);
 		EMITii(iCALL, 2);
-		EMITio(iDECL, name);
+		EMITio(iDECL, var); // var (name+type template) read at iDECL time to box a fresh Variable
 	    }
 	    EMITio(iPUSH, nil); // VarDecls-as-statement's own "value"
 	    return;
