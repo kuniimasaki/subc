@@ -10684,6 +10684,62 @@ oop prim_vm_incrdecr(int argc, oop *argv, oop env)
     return result;
 }
 
+// s.field / s.field = v -- mirrors eval()'s Member case and assign()'s
+// Member case exactly (member lookup by name in Tstruct,members to get
+// the byte offset + field type, then getMemory/setMemory; the
+// tree-walker duplicates this same lookup between eval() and assign()
+// rather than sharing it, so this does too, for the same shape). Both
+// operands arrive already evaluated (soru is a Struct, name is a Symbol
+// pushed directly, not iGETGVAR'd), so unlike prim_vm_addressof_symbol/
+// prim_vm_incrdecr this needs no env access.
+oop prim_vm_member(int argc, oop *argv, oop env)
+{
+    if (argc != 2) fatal("s.field: wrong number of arguments");
+    oop soru = argv[0], name = argv[1];
+    if (!is(Struct, soru)) fatal("cannot get member of non-struct: %s", toString(soru));
+    oop type    = get(soru, Struct,type);
+    oop memory  = get(soru, Struct,memory);
+    oop members = get(type, Tstruct,members);
+    int size    = get(type, Tstruct,size);
+    oop value = nil, vtype = nil;
+    List_do(members, var) {
+	if (name == get(var, Variable,name)) {
+	    vtype = get(var, Variable,type);
+	    value = get(var, Variable,value);
+	    break;
+	}
+    }
+    if (!value) fatal("no such member: %s", get(name, Symbol,name));
+    int offset = _integerValue(value);
+    int vsize  = typeSize(vtype);
+    if (offset + vsize > size) fatal("member out of bounds: %s", get(name, Symbol,name));
+    return getMemory(memory, offset, vtype);
+}
+
+oop prim_vm_store_member(int argc, oop *argv, oop env)
+{
+    if (argc != 3) fatal("s.field = v: wrong number of arguments");
+    oop rhs = argv[0], name = argv[1], soru = argv[2];
+    if (!is(Struct, soru)) fatal("cannot set member of non-struct: %s", toString(soru));
+    oop type    = get(soru, Struct,type);
+    oop memory  = get(soru, Struct,memory);
+    oop members = get(type, Tstruct,members);
+    int size    = get(type, Tstruct,size);
+    oop value = nil, vtype = nil;
+    List_do(members, var) {
+	if (name == get(var, Variable,name)) {
+	    vtype = get(var, Variable,type);
+	    value = get(var, Variable,value);
+	    break;
+	}
+    }
+    if (!value) fatal("no such member: %s", get(name, Symbol,name));
+    int offset = _integerValue(value);
+    int vsize  = typeSize(vtype);
+    if (offset + vsize > size) fatal("member out of bounds: %s", get(name, Symbol,name));
+    return setMemory(memory, offset, vtype, rhs);
+}
+
 oop assign(oop lhs, oop rhs)
 {
     oop dst = lhs;
@@ -11019,6 +11075,58 @@ void initialiseVariable(oop var, int local)
 	    break;
 	}
     }
+}
+
+// VM-only array/struct local allocation (mirrors initialiseVariable()'s
+// Tarray/Tstruct cases above): compileOn's VarDecls case cannot just run
+// every initialiser through prim_vm_coerce like it does for scalars/
+// pointers, because a declaration with no initialiser still needs *real*
+// storage allocated (previously it silently bound the symbol straight to
+// nil, so `int a[3]; a[0]=1;` failed with "cannot index-assign type
+// Undefined" -- confirmed pre-existing bug, documented in
+// docs/design/vm-implementation-status.md). compileOn pushes the
+// initialiser element expressions (if any) plus the array/struct type,
+// and these primitives do the CALLOC+newMemory+newArray/newStruct
+// assembly and, when there is no initialiser, randomise() the memory --
+// exactly matching initialiseVariable()'s local/uninitialised-variable
+// behaviour (so the "use of uninitialised variable" detection still
+// fires for VM-compiled code, not just the tree-walker).
+oop prim_vm_alloc_array(int argc, oop *argv, oop env)
+{
+    if (argc < 1) fatal("internal: prim_vm_alloc_array wrong arity");
+    oop type    = argv[argc - 1];
+    int n_init  = argc - 1;
+    oop target  = get(type, Tarray,target);
+    int size    = _integerValue(get(type, Tarray,size));
+    int memsize = typeSize(target) * size;
+    void *mem    = CALLOC(size, typeSize(target));
+    oop   memory = newMemory(mem, memsize, 0);
+    oop   value  = newArray(type, memory, size);
+    if (n_init == 0) randomise(mem, memsize);
+    else for (int i = 0;  i < n_init;  ++i) setArray(value, i, argv[i]);
+    return value;
+}
+
+oop prim_vm_alloc_struct(int argc, oop *argv, oop env)
+{
+    if (argc < 1) fatal("internal: prim_vm_alloc_struct wrong arity");
+    oop type   = argv[argc - 1];
+    int n_init = argc - 1;
+    int size   = get(type, Tstruct,size);
+    void *mem    = CALLOC(1, size);
+    oop   memory = newMemory(mem, size, 0);
+    oop   value  = newStruct(type, memory);
+    if (n_init == 0) randomise(mem, size);
+    else {
+	oop members = get(type, Tstruct,members);
+	for (int i = 0;  i < n_init;  ++i) {
+	    oop member = List_get(members, i);
+	    int offset = _integerValue(get(member, Variable,value));
+	    oop mtype  = get(member, Variable,type);
+	    setMemory(memory, offset, mtype, argv[i]);
+	}
+    }
+    return value;
 }
 
 oop eval(oop exp)
@@ -12192,7 +12300,15 @@ void compileOn(oop exp, oop program, oop cs, oop bs)
 	    EMITii(iCALL, 2);
 	    return;
 	}
-	case Member:		    assert(!"unimplemented");
+	case Member: {
+	    static oop p_member = 0;
+	    if (!p_member) p_member = newPrimitive(intern(".field"), nil, nil, prim_vm_member);
+	    EMITio(iPUSH, get(exp, Member,name));	// the field name symbol (argv[1]), NOT iGETGVAR'd, pushed first
+	    compileOn(get(exp, Member,lhs), program, cs, bs);	// the struct value (argv[0]), pushed last
+	    EMITio(iPUSH, p_member);
+	    EMITii(iCALL, 2);
+	    return;
+	}
 	case Assign: {
 	    oop lhs = get(exp, Assign,lhs);
 	    oop rhs = get(exp, Assign,rhs);
@@ -12213,6 +12329,16 @@ void compileOn(oop exp, oop program, oop cs, oop bs)
 		    compileOn(get(lhs, Index,rhs), program, cs, bs);	// index (2nd logical arg)
 		    compileOn(get(lhs, Index,lhs), program, cs, bs);	// base  (1st logical arg) pushed last
 		    EMITio(iPUSH, p_store_index);
+		    EMITii(iCALL, 3);
+		    return;
+		}
+		case Member: {
+		    static oop p_store_member = 0;
+		    if (!p_store_member) p_store_member = newPrimitive(intern(".field="), nil, nil, prim_vm_store_member);
+		    compileOn(get(lhs, Member,lhs), program, cs, bs);	// struct (argv[2]), pushed first
+		    EMITio(iPUSH, get(lhs, Member,name));		// field name (argv[1]), pushed second
+		    compileOn(rhs, program, cs, bs);			// value (argv[0]), pushed last
+		    EMITio(iPUSH, p_store_member);
 		    EMITii(iCALL, 3);
 		    return;
 		}
@@ -12353,28 +12479,97 @@ void compileOn(oop exp, oop program, oop cs, oop bs)
 	case Tfunction:	assert(!"unimplemented");    	return;
 	case Tetc:	assert(!"unimplemented");    	return;
 	case VarDecls: {
-	    // by the time compileOn reaches this (compiling a function body
-	    // that compileOn's own Function case already ran typeCheck()
-	    // over), VarDecls,variables has already been rewritten by
-	    // typeCheck's VarDecls case into a list of resolved Variable
-	    // objects whose ,value field holds the raw (unevaluated)
-	    // initialiser expression -- the same shape eval()'s VarDecls
-	    // case consumes. Compile each initialiser (or push nil if
-	    // absent) and iDECL it into the current lexical environment.
+	    // by the time compileOn reaches this WHILE COMPILING A FUNCTION
+	    // BODY (where compileOn's own Function case already ran
+	    // typeCheck() over the whole body), VarDecls,variables has
+	    // already been rewritten by typeCheck's VarDecls case into a
+	    // list of resolved Variable objects whose ,value field holds
+	    // the raw (unevaluated) initialiser expression -- the same
+	    // shape eval()'s VarDecls case consumes.
+	    //
+	    // But a VarDecls can also arrive here UNCHECKED: replFile's -O
+	    // path (see main()) compiles+executes every top-level form
+	    // directly, with no typeCheck()/preval() pass at all (Function/
+	    // Primitive compensate for exactly this by self-typechecking;
+	    // this is the same gap for a bare top-level VarDecls, e.g. a
+	    // global variable or -- what actually surfaced this -- a
+	    // struct-tag-only declaration like `struct Point { int x, y; };`,
+	    // whose sole "variable" is the parser's `nil` placeholder for
+	    // "no declarator name" until typeCheck runs and discards it).
+	    // Detect this the same way: a not-yet-checked VarDecls always
+	    // starts with at least one non-Variable entry (nil, a bare
+	    // Symbol, or an Assign node); an already-checked one, even a
+	    // struct-tag-only declaration that resolves to zero real
+	    // variables, never does. self-typeCheck before proceeding, which
+	    // also runs declareTag() for a struct/union type named here.
+	    oop vars0 = get(exp, VarDecls,variables);
+	    if (get(vars0, List,size) > 0 && !is(Variable, get(vars0, List,elements)[0]))
+		typeCheck(exp, nil);
+	    // Compile each initialiser (or push nil if absent) and iDECL it
+	    // into the current lexical environment.
 	    static oop p_coerce = 0;
 	    if (!p_coerce) p_coerce = newPrimitive(intern("<vardecl-init>"), nil, nil, prim_vm_coerce);
-	    oop vars = get(exp, VarDecls,variables);
+	    static oop p_alloc_array = 0;
+	    if (!p_alloc_array) p_alloc_array = newPrimitive(intern("<vardecl-array>"), nil, nil, prim_vm_alloc_array);
+	    static oop p_alloc_struct = 0;
+	    if (!p_alloc_struct) p_alloc_struct = newPrimitive(intern("<vardecl-struct>"), nil, nil, prim_vm_alloc_struct);
+	    oop vars = get(exp, VarDecls,variables); // re-fetch: typeCheck() replaces this list in place
 	    int n = get(vars, List,size);
 	    oop *velts = get(vars, List,elements);
 	    for (int i = 0;  i < n;  ++i) {
 		oop var  = velts[i];
 		oop type = get(var, Variable,type);
 		oop init = get(var, Variable,value);
-		EMITio(iPUSH, type); // pushed first -> ends up as argv[1] (type)
-		if (isNil(init)) EMITio(iPUSH, nil);
-		else compileOn(init, program, cs, bs); // pushed last -> argv[0] (value)
-		EMITio(iPUSH, p_coerce);
-		EMITii(iCALL, 2);
+		switch (getType(type)) {
+		    case Tarray: {
+			// element expressions (or string chars) pushed in
+			// reverse source order, type pushed first, so
+			// argv[i] = element i and argv[argc-1] = type (see
+			// prim_vm_alloc_array).
+			EMITio(iPUSH, type);
+			int n_elems = 0;
+			if (isNil(init)) { /* no elements */ }
+			else if (is(String, init)) {
+			    int   isize = get(init, String,size);
+			    char *chars = get(init, String,elements);
+			    for (int k = isize - 1;  k >= 0;  --k)
+				EMITio(iPUSH, newInteger((unsigned char)chars[k]));
+			    n_elems = isize;
+			}
+			else {
+			    int  isz   = get(init, List,size);
+			    oop *ielts = get(init, List,elements);
+			    for (int k = isz - 1;  k >= 0;  --k)
+				compileOn(ielts[k], program, cs, bs);
+			    n_elems = isz;
+			}
+			EMITio(iPUSH, p_alloc_array);
+			EMITii(iCALL, n_elems + 1);
+			break;
+		    }
+		    case Tstruct: {
+			EMITio(iPUSH, type);
+			int n_elems = 0;
+			if (!isNil(init)) {
+			    int  isz   = get(init, List,size);
+			    oop *ielts = get(init, List,elements);
+			    for (int k = isz - 1;  k >= 0;  --k)
+				compileOn(ielts[k], program, cs, bs);
+			    n_elems = isz;
+			}
+			EMITio(iPUSH, p_alloc_struct);
+			EMITii(iCALL, n_elems + 1);
+			break;
+		    }
+		    default: {
+			EMITio(iPUSH, type); // pushed first -> ends up as argv[1] (type)
+			if (isNil(init)) EMITio(iPUSH, nil);
+			else compileOn(init, program, cs, bs); // pushed last -> argv[0] (value)
+			EMITio(iPUSH, p_coerce);
+			EMITii(iCALL, 2);
+			break;
+		    }
+		}
 		EMITio(iDECL, var); // var (name+type template) read at iDECL time to box a fresh Variable
 	    }
 	    EMITio(iPUSH, nil); // VarDecls-as-statement's own "value"
