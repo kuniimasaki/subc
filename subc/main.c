@@ -12440,9 +12440,92 @@ void compileOn(oop exp, oop program, oop cs, oop bs)
 	    PATCH(J2, L2);
 	    return;
 	}
-	case Switch:	assert(!"unimplemented");
-	case Case:	assert(!"unimplemented");
-	case Default:	assert(!"unimplemented");
+	case Switch: {
+	    // Switch,statements is a flat list where Case/Default act as
+	    // fallthrough labels (see eval()'s Switch case) -- compiled here
+	    // as: evaluate the condition once into a hidden local (so each
+	    // Case's value can be compared against it via plain iEQ/iGETGVAR
+	    // without re-evaluating the condition expression or needing a
+	    // "duplicate top of stack" opcode); a chain of comparisons, each
+	    // jumping to a to-be-patched label for its Case's body position
+	    // on match; then the body itself, with Case/Default contributing
+	    // no bytecode of their own (only recording where their label
+	    // patches to) and every real statement's value popped (a
+	    // switch's own value, unlike its C-non-existent status as an
+	    // expression, is never observed, so it's simply always nil --
+	    // matching eval()'s behaviour when no case/default matches).
+	    // continue is NOT caught here (cs passed through unchanged) --
+	    // it applies to the enclosing loop, matching eval()'s Switch
+	    // case re-propagating NLR_CONTINUE rather than consuming it;
+	    // break is caught (a fresh breaks list), same as While/For.
+	    oop cond  = get(exp, Switch,condition);
+	    oop stmts = get(exp, Switch,statements);
+	    int size  = get(stmts, List,size);
+	    oop *elts = get(stmts, List,elements);
+
+	    static oop hidden_var = 0;
+	    if (!hidden_var) hidden_var = newVariable(intern("<switch-cond>"), t_int, nil, 0);
+	    oop hidden_name = get(hidden_var, Variable,name);
+
+	    compileOn(cond, program, cs, bs);
+	    EMITio(iDECL, hidden_var);
+
+	    oop caseJumps = newList(); // "iJMP <case body>" instruction indices, in Case-encounter order
+	    for (int i = 0;  i < size;  ++i) {
+		oop s = elts[i];
+		if (!is(Case, s)) continue;
+		EMITio(iGETGVAR, hidden_name);
+		compileOn(get(s, Case,value), program, cs, bs);
+		EMITi(iEQ);
+		LABEL(Jnomatch);
+		EMITio(iJMPF, nil);
+		LABEL(Jmatch);
+		EMITio(iJMP, nil);
+		List_append(caseJumps, newInteger(Jmatch));
+		LABEL(Lnomatch);
+		PATCH(Jnomatch, Lnomatch);
+	    }
+	    // Every path into Lend (break's own jump, this "no case/default
+	    // matched" jump, or simply falling off the end of the body) must
+	    // provide exactly one value, each responsible for its own --
+	    // never two of these firing on the same execution, or Lend
+	    // accumulates leftover stack entries every time the switch is
+	    // entered ("N items on stack at end of execution" for a program
+	    // that runs N switches down a break-terminated path -- caught by
+	    // testing switch-ok.c before committing, not just by inspection).
+	    int has_default = 0;
+	    for (int i = 0;  i < size;  ++i) if (is(Default, elts[i])) { has_default = 1; break; }
+	    if (!has_default) EMITio(iPUSH, nil); // bypasses the body entirely -- needs its own value
+	    LABEL(Jdefault);
+	    EMITio(iJMP, nil); // -> Default's body if has_default, else -> Lend (patched below)
+
+	    oop breaks = newList();
+	    int case_i = 0;
+	    int defaultLabel = -1;
+	    oop *caseJumpElts = get(caseJumps, List,elements);
+	    for (int i = 0;  i < size;  ++i) {
+		oop s = elts[i];
+		if (is(Case, s)) {
+		    PATCH(_integerValue(caseJumpElts[case_i]), get(program, List,size));
+		    ++case_i;
+		    continue;
+		}
+		if (is(Default, s)) {
+		    defaultLabel = get(program, List,size);
+		    continue;
+		}
+		compileOn(s, program, cs, breaks);
+		EMITi(iPOP);
+	    }
+	    EMITio(iPUSH, nil); // fell off the end of the body normally -- needs its own value too
+	    LABEL(Lend);
+	    PATCH(Jdefault, has_default ? defaultLabel : Lend);
+	    for (int i = get(breaks, List,size);  i--;)
+		PATCH(_integerValue(get(breaks, List,elements)[i]), Lend);
+	    return;
+	}
+	case Case:	assert(!"this cannot happen"); // handled inline by Switch above
+	case Default:	assert(!"this cannot happen"); // handled inline by Switch above
 	case Return: {
 	    oop value = get(exp, Return,value);
 	    if (isNil(value)) EMITio(iPUSH, nil);
@@ -12575,7 +12658,23 @@ void compileOn(oop exp, oop program, oop cs, oop bs)
 	    EMITio(iPUSH, nil); // VarDecls-as-statement's own "value"
 	    return;
 	}
-	case TypeDecls:	assert(!"unimplemented");    	return;
+	case TypeDecls: {
+	    // `typedef long intptr_t;`-shaped forms -- same top-level-under
+	    // -O gap as VarDecls above (replFile skips typeCheck()/preval()
+	    // entirely for -O, so a typedef appearing at file scope, e.g.
+	    // from `#include <stdint.h>`, is never resolved/registered
+	    // otherwise). Detected the same way: an unchecked TypeDecls'
+	    // typenames list holds raw declarator nodes; a checked one holds
+	    // TypeName objects (declareType()'s return type). Purely a
+	    // compile-time scope registration -- no bytecode needed either
+	    // way, matching eval()/preval()'s TypeDecls cases (both just
+	    // return nil).
+	    oop typenames0 = get(exp, TypeDecls,typenames);
+	    if (get(typenames0, List,size) > 0 && !is(TypeName, get(typenames0, List,elements)[0]))
+		typeCheck(exp, nil);
+	    EMITio(iPUSH, nil);
+	    return;
+	}
 	case Scope:	assert(!"this cannot happen");	return;
 	case TypeName:	assert(!"unimplemented");    	return;
 	case Variable:	assert(!"unimplemented");    	return;
