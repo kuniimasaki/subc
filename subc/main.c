@@ -11834,13 +11834,36 @@ void disassemble(oop program)
 }
 
 
+// stack/frames both grow downward from a top-of-array capacity (push/frame-
+// entry decrements the index, so index 0 means "full"). Doubling the
+// backing store in place would leave the live elements at the wrong end,
+// so growth allocates a new (larger) buffer and re-lands the still-live
+// elements flush against ITS top, then repositions the index the same
+// distance from the new top -- every existing sp/fp-relative access
+// (stack[sp], stack+sp, frames[fp], ...) keeps working unchanged. Shared
+// by both the value stack (elemSize=sizeof(oop)) and the frame stack
+// (elemSize=sizeof(struct Frame)), which follow the identical convention.
+void growDownArray(void **arrp, int elemSize, int *sp, int *cap)
+{
+    int used   = *cap - *sp;
+    int newCap = *cap * 2;
+    char *newArr = MALLOC((size_t)elemSize * newCap);
+    memcpy(newArr + (size_t)(newCap - used) * elemSize,
+	   (char *)*arrp + (size_t)*sp * elemSize,
+	   (size_t)used * elemSize);
+    *arrp = newArr;
+    *sp   = newCap - used;
+    *cap  = newCap;
+}
+
 oop execute(oop program)
 {
     oop *code = get(program, List,elements);
     int pc = 0;
 
-    oop stack[32];
-    int sp = 32; // clear the stack
+    int stackCap = 32;
+    oop *stack = MALLOC(sizeof(oop) * stackCap);
+    int sp = stackCap; // clear the stack
 
     oop env = nil;
 
@@ -11855,19 +11878,25 @@ oop execute(oop program)
 			   // getPointer's existing isdead check.
 	oop *code;
 	int      pc;
-    } frames[32];
-    int fp = 32;
+    };
+    int frameCap = 32;
+    struct Frame *frames = MALLOC(sizeof(struct Frame) * frameCap);
+    int fp = frameCap;
 
-# define push(O)	(sp >  0 ? stack[--sp] = (O) : stackError("overflow"))
-# define pop()		(sp < 32 ? stack[sp++] : stackError("underflow"))
+# define push(O)	do {								\
+			    if (sp == 0) growDownArray((void **)&stack, sizeof(oop), &sp, &stackCap);	\
+			    stack[--sp] = (O);						\
+			} while (0)
+# define pop()		(sp < stackCap ? stack[sp++] : stackError("underflow"))
 # define top		(stack[sp])
 
     for (;;) {
 	oop insn = code[pc++];
 	switch ((enum opcode_t)_integerValue(insn)) {
 	    case iHALT: {
-		if (sp < 31) fatal("%d items on stack at end of execution", 32-sp);
-		if (sp < 32) return stack[sp];
+		int used = stackCap - sp;
+		if (used > 1) fatal("%d items on stack at end of execution", used);
+		if (used == 1) return stack[sp];
 		fatal("stack empty at end of execution");
 		return nil;
 	    }
@@ -12079,7 +12108,7 @@ oop execute(oop program)
 			    environment = newPair(newPair(get(pv, Variable,name), box), environment);
 			}
 			sp += argc;
-			if (fp < 1) fatal("too many function calls");
+			if (fp == 0) growDownArray((void **)&frames, sizeof(struct Frame), &fp, &frameCap);
 			--fp;
 			frames[fp].env     = env;   env  = environment;
 			frames[fp].baseEnv = baseEnv;
@@ -12094,7 +12123,7 @@ oop execute(oop program)
 		continue;
 	    }
 	    case iRETURN: {
-		assert(fp < 32);
+		assert(fp < frameCap);
 		// mirror Scope_end()/kill_scpp(): mark every local bound
 		// during this call (parameters + iDECL'd locals) as dead,
 		// so `return &localvar;` is caught the same way the tree-

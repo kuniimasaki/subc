@@ -161,5 +161,11 @@ make demo     # demofiles/*.c を全件実行(目視確認用)
 - `make test` → 65 passed, 0 failed(修正前は63)。`demofiles/*.c`+`mydemo/*.c`
   計75本の `-O` 網羅性スイープは引き続き全件クラッシュなし。
 
+**VM(`-O`)の値/フレームスタックを動的に伸びる構造に変更**
+- `oop stack[32]`/`struct Frame frames[32]` という固定長配列を、倍々に伸びるヒープ
+  バッファに置き換え、深い再帰でも `stack overflow` しなくなった。深さ5000の再帰
+  (`depth(5000)`)、以前は深さ32で溢れていた `nfib(32)` が完走することを確認。
+- 追加テスト: `vm-deep-recursion-ok.c`。`make test` → 66 passed, 0 failed(修正前は65)。
+
 各修正は独立したコミットに分割し、コミットのたびに `demofiles/*.c` 全件を実行して
 既存の検出結果(非決定的なヒープアドレスを除く)が意図せず変化していないことを確認している。
