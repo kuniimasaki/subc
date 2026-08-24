@@ -5277,14 +5277,25 @@ void compileOn(oop exp, oop program, oop cs, oop bs)
 	case Token:	assert(!"this cannot happen");
 	case Integer:	EMITio(iPUSH, exp);	return;
 	case Float:	EMITio(iPUSH, exp);	return;
-	case Pointer:	assert(!"unimplemented");
-	case Array:	assert(!"unimplemented");
-	case Struct:	assert(!"unimplemented");
+	// Pointer/Array/Struct/List/Memory/Reference are runtime VALUE types
+	// (produced by eval()/getPointer()/getArray()/etc.), never AST nodes
+	// the parser constructs -- every compileOn(...) call site recurses
+	// only on a raw parsed sub-expression (get(exp, SomeNode,field), a
+	// Block/Call/List-of-arguments element, ...) or an already-typeCheck-
+	// resolved template read via get() and pushed directly with EMITio
+	// (VarDecls's declared type, a Cast's own node-as-primitive-argument,
+	// Sizeof's precomputed size), never one of these runtime values
+	// routed back through compileOn. Confirmed by exhaustively tracing
+	// every recursive compileOn(...) call site in this function; see
+	// docs/design/vm-implementation-status.md.
+	case Pointer:	assert(!"this cannot happen");
+	case Array:	assert(!"this cannot happen");
+	case Struct:	assert(!"this cannot happen");
 	case Symbol:	EMITio(iGETGVAR, exp);	return;
 	case Pair:	EMITio(iPUSH, exp);	return;
 	case String:	EMITio(iPUSH, exp);	return;
-	case List:	assert(!"unimplemented");
-	case Memory:	assert(!"unimplemented");
+	case List:	assert(!"this cannot happen");
+	case Memory:	assert(!"this cannot happen");
 	case Primitive: {
 	    // an unresolved extern declaration (e.g. `extern void *malloc(long
 	    // size);`, parsed from the #include <stdlib.h> stub -- and every
@@ -5298,7 +5309,7 @@ void compileOn(oop exp, oop program, oop cs, oop bs)
 	    EMITio(iPUSH, exp);
 	    return;
 	}
-	case Reference: assert(!"unimplemented");
+	case Reference: assert(!"this cannot happen"); // same reasoning as Pointer/Array/... above
 	case Closure:	EMITio(iPUSH, exp);	return;
 	case Call: {
 	    Object  *args = get(exp, Call,arguments);
@@ -5719,18 +5730,23 @@ void compileOn(oop exp, oop program, oop cs, oop bs)
 	    List_append(bs, newInteger(L1));
 	    return;
 	}
-	case Tvoid:	assert(!"unimplemented");    	return;
-	case Tchar:	assert(!"unimplemented");    	return;
-	case Tshort:	assert(!"unimplemented");    	return;
-	case Tint:	assert(!"unimplemented");    	return;
-	case Tlong:	assert(!"unimplemented");    	return;
-	case Tfloat:	assert(!"unimplemented");    	return;
-	case Tdouble:	assert(!"unimplemented");    	return;
-	case Tpointer:	assert(!"unimplemented");    	return;
-	case Tarray:	assert(!"unimplemented");    	return;
-	case Tstruct:	assert(!"unimplemented");    	return;
-	case Tfunction:	assert(!"unimplemented");    	return;
-	case Tetc:	assert(!"unimplemented");    	return;
+	// Type-tag nodes (Tvoid..Tetc) are metadata, always read via get(...)
+	// or pushed directly with EMITio (VarDecls's declared type, Cast's
+	// resolved target type read out of the node itself inside
+	// prim_vm_cast) -- never handed to compileOn as `exp`. Same
+	// confirmed-unreachable reasoning as Pointer/Array/... above.
+	case Tvoid:	assert(!"this cannot happen");	return;
+	case Tchar:	assert(!"this cannot happen");	return;
+	case Tshort:	assert(!"this cannot happen");	return;
+	case Tint:	assert(!"this cannot happen");	return;
+	case Tlong:	assert(!"this cannot happen");	return;
+	case Tfloat:	assert(!"this cannot happen");	return;
+	case Tdouble:	assert(!"this cannot happen");	return;
+	case Tpointer:	assert(!"this cannot happen");	return;
+	case Tarray:	assert(!"this cannot happen");	return;
+	case Tstruct:	assert(!"this cannot happen");	return;
+	case Tfunction:	assert(!"this cannot happen");	return;
+	case Tetc:	assert(!"this cannot happen");	return;
 	case VarDecls: {
 	    // by the time compileOn reaches this WHILE COMPILING A FUNCTION
 	    // BODY (where compileOn's own Function case already ran
@@ -5846,9 +5862,16 @@ void compileOn(oop exp, oop program, oop cs, oop bs)
 	    return;
 	}
 	case Scope:	assert(!"this cannot happen");	return;
-	case TypeName:	assert(!"unimplemented");    	return;
-	case Variable:	assert(!"unimplemented");    	return;
-	case Constant:	assert(!"unimplemented");    	return;
+	// TypeName (a declareType()'d typedef binding) and Variable (a
+	// VarDecls/parameter template, or a Scope_lookup() result) are only
+	// ever read field-by-field via get(...) -- e.g. VarDecls's own case
+	// above reads var,type/var,value directly, never calls
+	// compileOn(var, ...) on the template itself. Constant is likewise
+	// metadata-only (named constants aren't otherwise implemented in
+	// this language subset -- see CHANGELOG.md's enum/union note).
+	case TypeName:	assert(!"this cannot happen");	return;
+	case Variable:	assert(!"this cannot happen");	return;
+	case Constant:	assert(!"this cannot happen");	return;
 	case Function: {
 	    assert(0 == get(exp, Function,code));
 	    // -O bypasses typeCheck()/preval() entirely (see replFile), so nothing

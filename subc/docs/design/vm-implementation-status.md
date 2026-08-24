@@ -22,7 +22,7 @@ VM専用回帰テスト、`vm-*.c`/`vm-*-ok.c`)。
 | ✅ 実装済み | `Undefined`, `Input`, `Integer`, `Float`, `Symbol`, `Pair`, `String`, `Closure`, `Call`, `Block`, `Dereference`, `Sizeof`, `Index`, `While`, `For`, `If`, `Switch`/`Case`/`Default`, `Return`, `Continue`, `Break`, `VarDecls`, `TypeDecls`, `Function`, `Primitive`, `Addressof`, `Cast`, `Member` | `Dereference`/`Index`/`Cast`/`Addressof`/`Member`/ポインタ代入・メンバ代入は全て `prim_vm_*` プリミティブ経由(Option B、ツリーウォーカーの既存関数をそのまま再利用)。`VarDecls`/`TypeDecls` はトップレベル出現時に自己 `typeCheck()` する(下記参照)。 |
 | ✅ 実装済み(演算子単位) | `Unary` の `NEG`/`NOT`/`COM`/`PREINC`/`PREDEC`/`POSTINC`/`POSTDEC` | `++`/`--` は `prim_vm_incrdecr` 経由。 |
 | ✅ 実装済み(演算子単位) | `Binary` の全演算子(`MUL DIV MOD ADD SUB SHL SHR LT LE GE GT EQ NE BAND BXOR BOR LAND LOR`) | `LAND`/`LOR` は短絡評価(JMPF/JMPによる制御フロー)。`ADD` はポインタ/配列+整数のポインタ演算に対応。比較演算子は `compare()`/`equal()` 経由(下記のiJMPF/比較バグ参照)。 |
-| ⚠️ 未実装だが通常は踏まない(データ値/パース時専用) | `Array`, `Pointer`, `Struct`, `Memory`, `Reference`, `Tvoid`..`Tetc`(11種), `Scope`, `TypeName`, `Variable`, `Constant`, `Token` | これらは「実行対象のASTノード」としてではなく、他ノードのフィールド(型情報・実行時値)として扱われるため、`compileOn()` が直接呼ばれる経路は無い。**未検証** — 別の構文パターンで踏む可能性は残る。 |
+| ✅ 到達不可能と確認済み(`assert(!"this cannot happen")`) | `Array`, `Pointer`, `Struct`, `Memory`, `Reference`, `Tvoid`..`Tetc`(12種), `Scope`, `TypeName`, `Variable`, `Constant`, `Token` | 実行対象のASTノードとしてではなく、他ノードのフィールド(型情報・実行時値)として扱われるため、`compileOn()` が直接呼ばれる経路が本当に無いことを、全ての再帰呼び出し箇所(`compileOn(...)`)を洗い出して確認した。以前は「未検証」だった(下記参照)。 |
 
 ## 実装の勘所
 
@@ -121,6 +121,18 @@ VM専用回帰テスト、`vm-*.c`/`vm-*-ok.c`)。
   「まだ型解決されていないか」を「先頭要素が期待する型(`Variable`/`TypeName`)になって
   いないか」で判定し、必要なら自身に `typeCheck(exp, nil)` を実行してから処理を続ける
   ように修正。
+- **残っていた `assert(!"unimplemented")` の棚卸し完了**: `Pointer`/`Array`/`Struct`/
+  `List`/`Memory`/`Reference`/`Tvoid`..`Tetc`(12種)/`Scope`/`TypeName`/`Variable`/
+  `Constant` は全て、`compileOn()` 内の再帰呼び出し箇所を1つ残らず洗い出した結果、
+  「他ノードのフィールドとして `get(...)` で読むだけ、または typeCheck 済みの
+  値を `EMITio(iPUSH, ...)` で直接プッシュするだけで、`compileOn()` 自体には
+  一度も渡らない」ことを確認できた(パーサがこれらの型のASTノードを構築することは
+  無く、typeCheck の書き換えも常に通常のASTノードの上で行われるため)。
+  `assert(!"unimplemented")`(まだ実装していないだけ、というニュアンス)を
+  `assert(!"this cannot happen")`(到達不可能であることを確認済み、というニュアンス。
+  既存の `Token`/`Scope` と同じ表現)に変更。挙動は変わらない(元々どちらも
+  到達すればクラッシュする)、`docs/design/vm-implementation-status.md` の
+  「未検証」という注記を解消するための、意味の正確化のみの変更。
 
 ## 見つけて直した、クラッシュではない静かなバグ
 
@@ -144,10 +156,19 @@ VM専用回帰テスト、`vm-*.c`/`vm-*-ok.c`)。
 
 ## 既知の残課題(意図的に今回は追わなかったもの)
 
-- **`mydemo/fisr.c`(高速逆平方根)はクラッシュしなくなったが数値が正しくない**:
-  ビットレベルの float/int 型パニングが `-O` 経由では忠実に再現されていない
-  (クラッシュはしない、という Task の目的自体は達成しているが、この特定の
-  高度な構文の数値的な正確性までは踏み込んでいない)。
+- **`mydemo/fisr.c`(高速逆平方根)の数値が正しくない**: 調査の結果、これは
+  **VM固有の遅れではなく、ツリーウォーカー側にも全く同じ形で存在する既存の
+  制限**と判明(`-O` 無し・`-O` あり両方で同一の誤ったガベージ値を返す)。
+  `i = *(long *)&y;` のようなビットレベルのfloat/int型パニング(同じメモリを
+  型を変えて再解釈する常套手段)は、ポインタの参照先が「変数(`Pointer.base`
+  が `Variable`)」の場合、`getPointer()`/`setMemory()` が `Pointer.type` を
+  無視して単に `Variable.value` を返す/上書きするだけで、生バイトの再解釈を
+  一切行っていない(メモリブロック経由のポインタなら `*(long*)addr` で正しく
+  バイト再解釈されるが、ローカル変数直参照の経路には無い)。修正には
+  `getPointer`/`setMemory` の `Variable` ケースに型パニングを実装する必要があり、
+  ツリーウォーカー・VM 両方の意味論に影響する、本ドキュメントの主眼(VMを
+  ツリーウォーカーに追いつかせる)を超えた変更になるため、ユーザー確認の上で
+  今回はスコープ外とした。
 
 ## 検証方法
 

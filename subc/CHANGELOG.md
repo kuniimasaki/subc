@@ -538,3 +538,26 @@ non-pointer: Integer` で(ツリーウォーカーの「不正な書き込み」
   (`-O` 無し)の全回帰(既存67テスト中の非VMテスト)も無変化であることを確認。
 - `docs/design/vm-implementation-status.md` を更新(既知の残課題からこの項目を削除、
   実装の勘所に追記)。残るは「`fisr.c` の数値精度」1件のみ。
+
+### `mydemo/fisr.c` の数値精度問題を調査(コード変更なし)、`compileOn()` の残り棚卸し
+
+- **`fisr.c` 調査**: `-O` 無し・`-O` あり双方で `Q_rsqrt(100.0)` が同一の
+  誤ったガベージ値を返すことを確認。**VM固有の遅れではなく、ツリーウォーカー
+  側にも同じ形で存在する既存の制限**と判明(`i = *(long *)&y;` のような
+  ビットレベルのfloat/int型パニングを、ポインタの参照先が「変数」の場合に
+  `getPointer`/`setMemory` が一切実装していないため)。修正には
+  ツリーウォーカー・VM両方の意味論に影響する変更が必要なため、ユーザーに
+  確認の上、対応不要な既知の制限として `docs/design/vm-implementation-status.md`
+  に記録するに留めた(コード変更なし)。
+- **`compileOn()` に残っていた `assert(!"unimplemented")` の棚卸し**:
+  `Pointer`/`Array`/`Struct`/`List`/`Memory`/`Reference`/`Tvoid`..`Tetc`
+  (12種)/`Scope`/`TypeName`/`Variable`/`Constant` について、`compileOn()`
+  内の再帰呼び出し箇所を1つ残らず洗い出し、これらの型のASTノードは
+  パーサが構築することも、typeCheck が生成することも無く、
+  `compileOn()` に渡ることが構造的に無いことを確認。
+  `assert(!"unimplemented")`(未実装、というニュアンス)を
+  `assert(!"this cannot happen")`(到達不可能と確認済み、というニュアンス。
+  既存の `Token`/`Scope` と同じ表現)に変更。挙動は変わらない
+  (元々どちらも到達すればクラッシュする)、意味の正確化のみ。
+  `./scripts/run-tests.sh` → 67 passed, 0 failed(無変化)。`-O` 網羅性
+  スイープも全77本クラッシュなし(無変化)。
