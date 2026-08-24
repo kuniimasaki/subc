@@ -680,3 +680,45 @@ vs VM を比較しようとしたところ、VMだけが極端に遅く(数分�
   `strlen-use-after-free.c`(解放済みポインタへの `strlen()` がuse-after-freeとして
   検出されることを確認)。
 - `./scripts/run-tests.sh`・`make testvm` → 71 passed, 0 failed(修正前は68)。
+
+### ヘッダファイルをさらに拡充: `math.h`/`ctype.h`(新設)、`stdio.h`/`stdlib.h`の追加関数
+
+ユーザーからの「ほかにどのヘッダファイルならいけそう?」という問いに対する提案(実装リスクが
+低い順)を受けて、選択されたものを実装。
+
+- **`math.h`(新設)**: `sqrtf`/`fabsf`/`floorf`/`ceilf`/`powf`。`sqrtf` は以前から
+  `_do_primitives` に実装済みだったのに専用ヘッダが無いという状態だった。いずれも
+  単純な数値変換のみでポインタ/メモリが絡まないため実装が軽い。
+- **`ctype.h`(新設)**: `isalpha`/`isdigit`/`isspace`/`isupper`/`islower`/`toupper`/
+  `tolower`。`int`→`int`の単純な関数ばかりで、string.h 系より実装が軽い。`is*()`系は
+  実際のlibcの「非ゼロを返す」という緩い仕様のまま公開すると `%d` で表示したときの
+  値が不定になるため、厳密に `0`/`1` に正規化した。
+- **`stdlib.h` 追加**: `atol`/`atof`/`abs`/`rand`/`srand`。`atol`/`atof` は既存の
+  `atoi` と全く同じパターン(`pointerString()` 経由)。
+- **`stdio.h` 追加**: `putchar`/`getchar`/`puts`(単純な入出力)、`sprintf`/`snprintf`
+  (書式付き文字列生成)。
+  - `sprintf`/`snprintf` は `prim_printf` の書式解析ループとは**別に独立した**
+    `renderFormatString()` を新設(`prim_printf` 自体は一切変更していない —— 既存の
+    全デモファイルが依存している printf の挙動に回帰リスクを持ち込まないため)。
+    各 `%` 指示子を小さな書式片に組み立て直し実際のCライブラリの `snprintf` に
+    委譲する、という `prim_printf` と同じアプローチを踏襲(数値フォーマットの
+    再実装はしない)。
+  - `sprintf` は `strcpy`/`strcat` と同様、1バイトずつ `setMemory()` 経由で書き込む
+    ため、確保先バッファより長い出力は `strcpy` と全く同じ `"memory offset out of
+    bounds"` 検出が発火する(`strcpy` オーバーフローと並ぶ典型的なメモリバグ
+    パターン)。`snprintf` は指定容量を超えないよう安全に切り詰める(実際のCの
+    `snprintf` と同様、返り値は「切り詰めなければ書き込まれていたはずの長さ」)。
+  - **実装中に見つけて直した自分自身のバグ**: `snprintf` の切り詰め処理が、
+    切り詰め位置に明示的なnull終端を書かず、レンダリング結果のその位置の文字
+    (たまたまnullではない、切り詰められた文字列の続きの1文字)をそのまま
+    コピーしてしまっていた。手元のテストで「切り詰め後の文字列にnull終端が
+    見つからない」というエラーとして発覚し、切り詰め位置には常に明示的に
+    `0` を書き込むよう修正。
+- **`stdint.h` に固定幅整数型を追加**: `int8_t`/`int16_t`/`int32_t`/`int64_t`
+  (`char`/`short`/`int`/`long` の `typedef` のみ、新規プリミティブ不要)。
+  `uint8_t` 等の符号なし版は、この言語に `unsigned` キーワード自体が無いため
+  追加していない。
+- 追加テスト: `new-headers-ok.c`(math.h/ctype.h/stdlib.h追加分/putchar・getchar・puts
+  の正しさを一括確認)、`sprintf-buffer-overflow.c`(バッファオーバーフロー検出)、
+  `snprintf-truncates-ok.c`(安全な切り詰めが誤検知されないことの確認)。
+- `./scripts/run-tests.sh`・`make testvm` → 74 passed, 0 failed(修正前は71)。

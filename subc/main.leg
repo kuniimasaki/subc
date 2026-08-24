@@ -9,6 +9,7 @@
 #include <stdint.h>
 #include <string.h>
 #include <math.h>
+#include <ctype.h>
 #include <assert.h>
 #include <stdarg.h>
 #include <errno.h>
@@ -107,7 +108,11 @@ char *binaryName(int op) {
 
 #define _do_primitives(_)							\
     _(printf) _(assert) _(malloc) _(free) _(realloc) _(calloc) _(exit) _(abort) _(atoi) _(sqrtf) \
-    _(strlen) _(strcpy) _(strcat) _(strcmp) _(memcpy) _(memset)
+    _(strlen) _(strcpy) _(strcat) _(strcmp) _(memcpy) _(memset) \
+    _(atol) _(atof) _(abs) _(rand) _(srand) \
+    _(fabsf) _(floorf) _(ceilf) _(powf) \
+    _(isalpha) _(isdigit) _(isspace) _(isupper) _(islower) _(toupper) _(tolower) \
+    _(putchar) _(getchar) _(puts) _(sprintf) _(snprintf)
 
 #define _(X) oop s_##X = 0;
 _do_primitives(_)
@@ -2784,12 +2789,132 @@ oop prim_atoi(int argc, oop *argv, oop env) // array
     return newInteger(atoi(pointerString(arg)));
 }
 
+oop prim_atol(int argc, oop *argv, oop env) // array
+{
+    if (argc != 1) fatal("atol: wrong number of arguments");
+    oop arg = argv[0];
+    if (!is(Pointer, arg) || t_pchar != get(arg, Pointer,type))
+	fatal("atol: illegal argument: %s", toString(arg));
+    return newInteger(atol(pointerString(arg)));
+}
+
+oop prim_atof(int argc, oop *argv, oop env) // array
+{
+    if (argc != 1) fatal("atof: wrong number of arguments");
+    oop arg = argv[0];
+    if (!is(Pointer, arg) || t_pchar != get(arg, Pointer,type))
+	fatal("atof: illegal argument: %s", toString(arg));
+    return newFloat(atof(pointerString(arg)));
+}
+
+oop prim_abs(int argc, oop *argv, oop env) // array
+{
+    if (argc != 1) fatal("abs: wrong number of arguments");
+    if (!is(Integer, argv[0])) fatal("abs: argument is not an integer");
+    return newInteger(abs((int)_integerValue(argv[0])));
+}
+
+oop prim_rand(int argc, oop *argv, oop env) // array
+{
+    if (argc != 0) fatal("rand: wrong number of arguments");
+    return newInteger(rand());
+}
+
+oop prim_srand(int argc, oop *argv, oop env) // array
+{
+    if (argc != 1) fatal("srand: wrong number of arguments");
+    if (!is(Integer, argv[0])) fatal("srand: argument is not an integer");
+    srand((unsigned)_integerValue(argv[0]));
+    return nil;
+}
+
 oop prim_sqrtf(int argc, oop *argv, oop env) // array
 {
     if (argc != 1) fatal("sqrtf: wrong number of arguments");
     oop arg = argv[0];
     if (!is(Float, arg)) fatal("sqrtf: argument is not a float");
     return newFloat(sqrtf(_floatValue(arg)));
+}
+
+oop prim_fabsf(int argc, oop *argv, oop env) // array
+{
+    if (argc != 1) fatal("fabsf: wrong number of arguments");
+    if (!is(Float, argv[0])) fatal("fabsf: argument is not a float");
+    return newFloat(fabsf(_floatValue(argv[0])));
+}
+
+oop prim_floorf(int argc, oop *argv, oop env) // array
+{
+    if (argc != 1) fatal("floorf: wrong number of arguments");
+    if (!is(Float, argv[0])) fatal("floorf: argument is not a float");
+    return newFloat(floorf(_floatValue(argv[0])));
+}
+
+oop prim_ceilf(int argc, oop *argv, oop env) // array
+{
+    if (argc != 1) fatal("ceilf: wrong number of arguments");
+    if (!is(Float, argv[0])) fatal("ceilf: argument is not a float");
+    return newFloat(ceilf(_floatValue(argv[0])));
+}
+
+oop prim_powf(int argc, oop *argv, oop env) // array
+{
+    if (argc != 2) fatal("powf: wrong number of arguments");
+    if (!is(Float, argv[0]) || !is(Float, argv[1])) fatal("powf: arguments are not floats");
+    return newFloat(powf(_floatValue(argv[0]), _floatValue(argv[1])));
+}
+
+// ctype.h: all take/return plain 'int' (char codes), no pointers/memory
+// involved, so unlike the string.h primitives these are exactly as simple
+// as real libc's -- is*() normalised to strictly 0/1 (real libc only
+// guarantees "nonzero", which would print unpredictable values via %d).
+oop prim_isalpha(int argc, oop *argv, oop env) // array
+{
+    if (argc != 1) fatal("isalpha: wrong number of arguments");
+    if (!is(Integer, argv[0])) fatal("isalpha: argument is not an integer");
+    return newInteger(!!isalpha((int)_integerValue(argv[0])));
+}
+
+oop prim_isdigit(int argc, oop *argv, oop env) // array
+{
+    if (argc != 1) fatal("isdigit: wrong number of arguments");
+    if (!is(Integer, argv[0])) fatal("isdigit: argument is not an integer");
+    return newInteger(!!isdigit((int)_integerValue(argv[0])));
+}
+
+oop prim_isspace(int argc, oop *argv, oop env) // array
+{
+    if (argc != 1) fatal("isspace: wrong number of arguments");
+    if (!is(Integer, argv[0])) fatal("isspace: argument is not an integer");
+    return newInteger(!!isspace((int)_integerValue(argv[0])));
+}
+
+oop prim_isupper(int argc, oop *argv, oop env) // array
+{
+    if (argc != 1) fatal("isupper: wrong number of arguments");
+    if (!is(Integer, argv[0])) fatal("isupper: argument is not an integer");
+    return newInteger(!!isupper((int)_integerValue(argv[0])));
+}
+
+oop prim_islower(int argc, oop *argv, oop env) // array
+{
+    if (argc != 1) fatal("islower: wrong number of arguments");
+    if (!is(Integer, argv[0])) fatal("islower: argument is not an integer");
+    return newInteger(!!islower((int)_integerValue(argv[0])));
+}
+
+oop prim_toupper(int argc, oop *argv, oop env) // array
+{
+    if (argc != 1) fatal("toupper: wrong number of arguments");
+    if (!is(Integer, argv[0])) fatal("toupper: argument is not an integer");
+    return newInteger(toupper((int)_integerValue(argv[0])));
+}
+
+oop prim_tolower(int argc, oop *argv, oop env) // array
+{
+    if (argc != 1) fatal("tolower: wrong number of arguments");
+    if (!is(Integer, argv[0])) fatal("tolower: argument is not an integer");
+    return newInteger(tolower((int)_integerValue(argv[0])));
 }
 
 oop setMemory(oop memory, int offset, oop type, oop value); // defined below, near getMemory
@@ -2927,6 +3052,185 @@ oop prim_memset(int argc, oop *argv, oop env) // array
     if (doff < 0 || doff + n > get(dmem, Memory,size)) fatal("memset: destination out of bounds");
     memset((char *)get(dmem, Memory,base) + doff, value, n);
     return dst;
+}
+
+oop prim_putchar(int argc, oop *argv, oop env) // array
+{
+    if (argc != 1) fatal("putchar: wrong number of arguments");
+    if (!is(Integer, argv[0])) fatal("putchar: argument is not an integer");
+    return newInteger(putchar((int)_integerValue(argv[0])));
+}
+
+oop prim_getchar(int argc, oop *argv, oop env) // array
+{
+    if (argc != 0) fatal("getchar: wrong number of arguments");
+    return newInteger(getchar());
+}
+
+oop prim_puts(int argc, oop *argv, oop env) // array
+{
+    if (argc != 1) fatal("puts: wrong number of arguments");
+    int remaining;
+    char *addr = cStringBase(argv[0], "puts", &remaining);
+    void *term = memchr(addr, '\0', remaining);
+    if (!term) fatal("puts: unterminated string: %s", toString(argv[0]));
+    fwrite(addr, 1, (char *)term - addr, stdout);
+    putchar('\n');
+    return newInteger(0);
+}
+
+// Shared by sprintf/snprintf: renders argv[0..argc-1] (format string plus
+// its own arguments -- NOT including the destination pointer or, for
+// snprintf, the capacity, both already peeled off by the caller) into a
+// plain C buffer. Deliberately independent of prim_printf's own parsing
+// loop above (same overall approach -- reassemble each %-directive into a
+// small fragment and hand it to the real C library's snprintf rather than
+// reimplementing numeric formatting -- but a separate copy) so this
+// addition carries zero regression risk to prim_printf, which every
+// existing demofile/test already depends on working exactly as before.
+int renderFormatString(int argc, oop *argv, char *out, int outcap)
+{
+    if (argc < 1) fatal("no format string");
+    oop format = argv[0];
+    if (!is(String, format)) fatal("format is not a string");
+    char *fmt  = get(format, String,elements);
+    int   size = get(format, String,size);
+    int   n    = 0;
+    int   argn = 1;
+    for (int i = 0;  i < size;) {
+	if (fmt[i] != '%') {
+	  echo:
+	    if (n >= outcap - 1) fatal("output too large");
+	    out[n++] = fmt[i++];
+	    continue;
+	}
+	int j = i, c = 0;
+	int mod_z = 0, mod_l = 0;
+	for (;;) {
+	    c = fmt[++j];
+	    if (!c) goto echo;
+	    if (!strchr(" 0123456789#-+'.zl", c)) break;
+	    if ('z' == c) ++mod_z;
+	    if ('l' == c) ++mod_l;
+	}
+	if (!strchr("cdiouxXceEfFgGsp%", c))
+	    fatal("illegal conversion specifier '%c'", c);
+	char dirbuf[32];
+	if (j - i >= sizeof(dirbuf) - 1) fatal("format too complex");
+	int k = 0;
+	while (i <= j) dirbuf[k++] = fmt[i++];
+	dirbuf[k] = 0;
+	char piece[512];
+	int  piece_len;
+	if ('%' == c) {
+	    piece_len = snprintf(piece, sizeof(piece), dirbuf, 0); // junk argument, same as prim_printf
+	}
+	else {
+	    if (argn >= argc) fatal("too few arguments for format string");
+	    oop arg = argv[argn++];
+	    switch (c) {
+		case 'c': case 'd': case 'i': case 'o': case 'u': case 'x': case 'X': {
+		    if (!is(Integer, arg)) fatal("argument of '%%%c' is not 'int'", c);
+		    long x = _integerValue(arg);
+		    if      (mod_z     ) piece_len = snprintf(piece, sizeof(piece), dirbuf, (size_t)x);
+		    else if (mod_l == 1) piece_len = snprintf(piece, sizeof(piece), dirbuf, (long)x);
+		    else if (mod_l == 2) piece_len = snprintf(piece, sizeof(piece), dirbuf, (long long)x);
+		    else                 piece_len = snprintf(piece, sizeof(piece), dirbuf, (int)x);
+		    break;
+		}
+		case 'e': case 'E': case 'f': case 'F': case 'g': case 'G': {
+		    if (!is(Float, arg)) fatal("argument of '%%%c' is not 'float'", c);
+		    piece_len = snprintf(piece, sizeof(piece), dirbuf, _floatValue(arg));
+		    break;
+		}
+		case 's': {
+		    char *addr;
+		    switch (getType(arg)) {
+			case String: addr = String_cString(arg); break;
+			case Pointer:
+			case Array: {
+			    if (t_char != elementType(arg))
+				fatal("%%s conversion of non-string: %s", toString(arg));
+			    addr = pointerString(arg);
+			    break;
+			}
+			default: fatal("%%s conversion of non-string: %s", toString(arg));
+		    }
+		    piece_len = snprintf(piece, sizeof(piece), dirbuf, addr);
+		    break;
+		}
+		case 'p': {
+		    switch (getType(arg)) {
+			case Pointer:
+			case Array: {
+			    dirbuf[k-1] = 's';
+			    piece_len = snprintf(piece, sizeof(piece), dirbuf, toString(arg));
+			    break;
+			}
+			default: fatal("%%p conversion of non-pointer: %s", getTypeName(arg));
+		    }
+		    break;
+		}
+		default: fatal("internal: unreachable conversion specifier '%c'", c);
+	    }
+	}
+	if (piece_len < 0 || (size_t)piece_len >= sizeof(piece)) fatal("format piece too large");
+	if (n + piece_len >= outcap) fatal("output too large");
+	memcpy(out + n, piece, piece_len);
+	n += piece_len;
+    }
+    if (argn < argc) fatal("too many arguments for format string");
+    out[n] = 0;
+    return n;
+}
+
+oop prim_sprintf(int argc, oop *argv, oop env) // array
+{
+    // like strcpy/strcat above, writes through setMemory() one byte at a
+    // time so overflowing the destination hits the same "memory offset
+    // out of bounds" detection every other subc write does -- sprintf()
+    // overflow is as classic a bug pattern as strcpy() overflow, and the
+    // whole reason to implement it here rather than leaving it out.
+    if (argc < 2) fatal("sprintf: wrong number of arguments");
+    oop dst = argv[0];
+    if (!is(Pointer, dst)) fatal("sprintf: destination is not a pointer");
+    oop dbase = get(dst, Pointer,base);
+    if (!is(Memory, dbase)) fatal("sprintf: destination is not a pointer into a buffer: %s", toString(dst));
+    static char rendered[65536];
+    int n = renderFormatString(argc - 1, argv + 1, rendered, sizeof(rendered));
+    for (int i = 0;  i <= n;  ++i) // <= to include the null terminator
+	setMemory(dbase, get(dst, Pointer,offset) + i, t_char, newInteger((unsigned char)rendered[i]));
+    return newInteger(n);
+}
+
+oop prim_snprintf(int argc, oop *argv, oop env) // array
+{
+    // the safe counterpart: truncates to fit within `cap` (including the
+    // null terminator) instead of overflowing, exactly like real C's
+    // snprintf -- still returns the length that *would* have been written
+    // (also matching real snprintf), so its return value alone can reveal
+    // truncation even though the write itself never goes out of bounds.
+    if (argc < 3) fatal("snprintf: wrong number of arguments");
+    oop dst = argv[0], capArg = argv[1];
+    if (!is(Pointer, dst)) fatal("snprintf: destination is not a pointer");
+    if (!is(Integer, capArg)) fatal("snprintf: capacity is not an integer");
+    long cap = _integerValue(capArg);
+    if (cap < 0) fatal("snprintf: negative capacity");
+    oop dbase = get(dst, Pointer,base);
+    if (!is(Memory, dbase)) fatal("snprintf: destination is not a pointer into a buffer: %s", toString(dst));
+    static char rendered[65536];
+    int n = renderFormatString(argc - 2, argv + 2, rendered, sizeof(rendered));
+    if (cap > 0) {
+	long towrite = n;
+	if (towrite > cap - 1) towrite = cap - 1;
+	for (long i = 0;  i < towrite;  ++i)
+	    setMemory(dbase, get(dst, Pointer,offset) + i, t_char, newInteger((unsigned char)rendered[i]));
+	// explicit null terminator at `towrite` -- when truncating (towrite <
+	// n), rendered[towrite] is just the next real character, not a null,
+	// so it must never be copied verbatim here.
+	setMemory(dbase, get(dst, Pointer,offset) + towrite, t_char, newInteger(0));
+    }
+    return newInteger(n);
 }
 
 void declareTag(oop type)

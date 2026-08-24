@@ -234,5 +234,21 @@ make demo     # demofiles/*.c を全件実行(目視確認用)
   `strlen-use-after-free.c`。`make test`/`make testvm` → 71 passed, 0 failed
   (修正前は68)。
 
+**ヘッダファイルをさらに拡充: `math.h`/`ctype.h`(新設)、`stdio.h`/`stdlib.h`の追加関数**
+- `math.h`(新設): `sqrtf`/`fabsf`/`floorf`/`ceilf`/`powf`。`ctype.h`(新設):
+  `isalpha`/`isdigit`/`isspace`/`isupper`/`islower`/`toupper`/`tolower`。
+  `stdlib.h`追加: `atol`/`atof`/`abs`/`rand`/`srand`。`stdio.h`追加:
+  `putchar`/`getchar`/`puts`/`sprintf`/`snprintf`。`stdint.h`に固定幅整数型
+  (`int8_t`〜`int64_t`)も追加(この言語に`unsigned`が無いため符号なし版は無し)。
+- `sprintf`は`strcpy`と同様1バイトずつ`setMemory()`経由で書き込むため、確保先
+  バッファより長い出力は同じ`"memory offset out of bounds"`検出が発火する。
+  `snprintf`は指定容量を超えないよう安全に切り詰める(実装中に見つけた自分自身の
+  バグ — 切り詰め位置への明示的なnull終端書き込み漏れ — も修正済み)。
+  `prim_printf`自体は一切変更していない(回帰リスク回避のため独立した
+  `renderFormatString()`を新設)。
+- 追加テスト: `new-headers-ok.c`、`sprintf-buffer-overflow.c`、
+  `snprintf-truncates-ok.c`。`make test`/`make testvm` → 74 passed, 0 failed
+  (修正前は71)。
+
 各修正は独立したコミットに分割し、コミットのたびに `demofiles/*.c` 全件を実行して
 既存の検出結果(非決定的なヒープアドレスを除く)が意図せず変化していないことを確認している。

@@ -37,11 +37,13 @@
 
 | ファイル | 説明 |
 |---|---|
-| `stdlib.h` | `malloc`/`free`/`realloc`/`calloc`/`exit`/`abort`/`atoi` 等の `extern` 宣言のみのスタブ。 |
-| `stdio.h` | `printf` の `extern` 宣言のみのスタブ。 |
+| `stdlib.h` | `malloc`/`free`/`realloc`/`calloc`/`exit`/`abort`/`atoi`/`atol`/`atof`/`abs`/`rand`/`srand` の `extern` 宣言。 |
+| `stdio.h` | `printf`/`sprintf`/`snprintf`/`putchar`/`getchar`/`puts` の `extern` 宣言。`sprintf` はバッファオーバーフロー検出付き、`snprintf` は容量内に安全に切り詰める。 |
 | `assert.h` | `assert` の `extern` 宣言のみのスタブ。 |
-| `stdint.h` | `intptr_t` の `typedef` のみのスタブ。 |
+| `stdint.h` | `intptr_t`/`int8_t`/`int16_t`/`int32_t`/`int64_t` の `typedef`。この言語に `unsigned` キーワードが無いため `uint*_t`系は未対応。 |
 | `string.h` | `strlen`/`strcpy`/`strcat`/`strcmp`/`memcpy`/`memset` の `extern` 宣言(`main.leg` の `prim_str*`/`prim_mem*` にバックエンドあり)。`strcpy`/`strcat` はバッファオーバーフロー検出付き。文字列リテラルは直接引数に渡さず一度 `char *` 変数へ代入すること、配列は `&arr[0]` の形で渡すことがこの言語の制約上必要。 |
+| `math.h` | `sqrtf`/`fabsf`/`floorf`/`ceilf`/`powf` の `extern` 宣言(新設。`sqrtf` 自体は以前から `_do_primitives` に実装済みだったが専用ヘッダが無かった)。 |
+| `ctype.h` | `isalpha`/`isdigit`/`isspace`/`isupper`/`islower`/`toupper`/`tolower` の `extern` 宣言(新設)。 |
 
 ## `subc/demofiles/`(メモリバグ検出の回帰テスト集)
 
@@ -87,6 +89,9 @@
 | `string-functions-ok.c` | `string.h` の6関数(`strlen`/`strcpy`/`strcat`/`strcmp`/`memcpy`/`memset`)の正しさを一括確認する陰性ケース。 |
 | `strcpy-buffer-overflow.c` | `strcpy()` で確保先バッファより長い文字列をコピーするバッファオーバーフローを検出。 |
 | `strlen-use-after-free.c` | 解放済みポインタへの `strlen()` が use-after-free として検出されることを確認。 |
+| `new-headers-ok.c` | `math.h`/`ctype.h`/`stdlib.h`追加分/`stdio.h`の`putchar`/`getchar`/`puts`の正しさを一括確認する陰性ケース。 |
+| `sprintf-buffer-overflow.c` | `sprintf()` で確保先バッファより長い文字列を書き込むバッファオーバーフローを検出。 |
+| `snprintf-truncates-ok.c` | `snprintf()` が容量を超えずに安全に切り詰めることの確認(オーバーフローとして誤検知しないこと)。 |
 | `malloc-negative-size.c` | `malloc()` に負のサイズを渡すケースを拒否することの確認。 |
 | `calloc-ok-zero-init.c` | `calloc()` がゼロ初期化された領域を返すことの確認。 |
 | `calloc-invalid-negative.c` | `calloc()` に不正な(負の)引数を渡すケースを拒否することの確認。 |
