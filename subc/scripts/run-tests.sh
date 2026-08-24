@@ -11,6 +11,13 @@
 #
 # Files with no .expect are skipped (not yet formalised as a test case).
 #
+# Set FORCE_FLAGS to override every test's own FLAGS= and run the whole
+# suite under one fixed set of flags regardless -- e.g.
+# `FORCE_FLAGS=-O scripts/run-tests.sh` runs every demofiles/*.c test
+# (not just the ones tagged FLAGS=-O) through the bytecode VM, to check
+# whether -O still reproduces every test's expected EXIT/CONTAINS, not
+# just whether it avoids crashing.
+#
 # Usage: scripts/run-tests.sh [path-to-main-binary]
 
 set -u
@@ -40,6 +47,7 @@ for c in demofiles/*.c; do
   exp_exit=$(sed -n 's/^EXIT=//p' "$expect")
   exp_contains=$(sed -n 's/^CONTAINS=//p' "$expect")
   flags=$(sed -n 's/^FLAGS=//p' "$expect")
+  if [ -n "${FORCE_FLAGS:-}" ]; then flags="$FORCE_FLAGS"; fi
 
   out=$("$BIN" $flags "$c" 2>&1)
   act_exit=$?

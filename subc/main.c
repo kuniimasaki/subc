@@ -10538,8 +10538,19 @@ oop prim_vm_store_deref(int argc, oop *argv, oop env)
 	    if (offset) fatal("pointer modified");
 	    return set(base, Variable,value, rhs);
 	}
-	case Memory:
-	    return setMemory(base, offset * typeSize(type), type, rhs);
+	case Memory: {
+	    // same bounds check (and message) as assign()'s Dereference/Memory
+	    // case, ahead of setMemory()'s own (differently-worded) check --
+	    // otherwise a pointer-arithmetic overrun surfaces as "memory
+	    // offset out of bounds" under -O instead of the tree-walker's
+	    // "assigning to out-of-bounds pointer" (found via `make testvm`
+	    // forcing every demofiles/*.c test through -O).
+	    int scale = typeSize(type);
+	    int size  = get(base, Memory,size);
+	    if (offset < 0 || offset * scale > size - scale)
+		fatal("assigning to out-of-bounds pointer");
+	    return setMemory(base, offset * scale, type, rhs);
+	}
 	case Integer: // (void *)(intptr_t)N -- mirrors assign()'s Dereference/Integer case
 	    fatal("attempt to store into arbitrary memory location");
 	default:
@@ -12054,7 +12065,16 @@ oop execute(oop program)
 		oop operand = code[pc++];
 		oop keyval  = assoc(env, operand);
 		if (nil != keyval) {
-		    push(get(get(keyval, Pair,tail), Variable,value));
+		    oop value = get(get(keyval, Pair,tail), Variable,value);
+		    // mirrors eval()'s Symbol case: a Variable box's ,value
+		    // stays nil (Undefined) until initialiseVariable()/
+		    // prim_vm_coerce actually assigns it, so reading nil back
+		    // means the declaration had no initialiser and was never
+		    // subsequently assigned -- found missing via `make testvm`
+		    // (demofiles/uninitialised.c silently returned 0 under -O
+		    // instead of detecting the same bug the tree-walker does).
+		    if (isNil(value)) fatal("use of uninitialised variable '%s'", get(operand, Symbol,name));
+		    push(value);
 		    continue;
 		}
 		oop val = get(operand, Symbol,value);
@@ -12071,7 +12091,12 @@ oop execute(oop program)
 		// find a primitive or another function by name.
 		oop resolved = Scope_lookup(operand);
 		if (resolved) {
-		    push(is(Variable, resolved) ? get(resolved, Variable,value) : resolved);
+		    if (is(Variable, resolved)) {
+			oop value = get(resolved, Variable,value);
+			if (isNil(value)) fatal("use of uninitialised variable '%s'", get(operand, Symbol,name));
+			push(value);
+		    }
+		    else push(resolved);
 		    continue;
 		}
 		fatal("undefined variable '%s'", get(operand, Symbol,name));

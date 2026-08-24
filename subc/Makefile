@@ -18,6 +18,9 @@ opt : main.c
 test : main
 	./scripts/run-tests.sh
 
+testvm : main
+	FORCE_FLAGS=-O ./scripts/run-tests.sh
+
 smoke : main
 	./main -vv test.txt
 
@@ -56,6 +59,9 @@ demo : main
 
 demov : main
 	for i in demofiles/*.c; do echo $$i; ./main -vv $$i;  done
+
+demovm : main
+	for i in demofiles/*.c mydemo/*.c; do echo "--------- $$i"; ./main -O $$i;  done
 
 bench : opt
 	time ./opt bench.c 28

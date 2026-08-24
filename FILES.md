@@ -21,7 +21,7 @@
 | `main.leg` | **正本**。PEG文法定義+評価器(ツリーウォーカー・バイトコードVM)のC実装が同居する単一ソース。手で編集するのはここだけ。 |
 | `main.c` | `main.leg` から `leg -o main.c main.leg` で生成される派生物。直接編集しない。 |
 | `main` | `main.c` をビルドした実行バイナリ(`gcc -std=c99 -Werror -Wall -Wno-unused -g -o main main.c -lgc -lm`)。 |
-| `Makefile` | ビルド(`make`)・テスト実行(`make test`)・デモ一括実行(`make demo`)・個別デモ実行などのターゲット定義。 |
+| `Makefile` | ビルド(`make`)・テスト実行(`make test`/`make testvm`)・デモ一括実行(`make demo`/`make demov`/`make demovm`)・個別デモ実行などのターゲット定義。`testvm`/`demovm` は `-O`(バイトコードVM)強制版。 |
 | `CHANGELOG.md` | 日付・タスク単位で構成された詳細な変更履歴(発見したバグ、原因、修正、検証方法を記録)。 |
 | `claude-code-prompt.md` | ユーザー自身が管理する元プロンプト文書(このセッションでは編集・参照のみ、git管理外)。 |
 | `test.txt` | 基本文法(関数・構造体・配列・ポインタ・typedef 等)を一通り試す手動スモークテスト用ソース(`make smoke` で実行)。 |
@@ -31,7 +31,7 @@
 
 | ファイル | 説明 |
 |---|---|
-| `run-tests.sh` | `demofiles/*.c` + `*.expect` サイドカーを読み、`EXIT=`/`CONTAINS=`/`FLAGS=` と実行結果を突き合わせて自動判定する回帰テストハーネス。`make test` から呼ばれる。第1引数で任意のバイナリ(例: 修正前バイナリとの比較用)を指定可能。 |
+| `run-tests.sh` | `demofiles/*.c` + `*.expect` サイドカーを読み、`EXIT=`/`CONTAINS=`/`FLAGS=` と実行結果を突き合わせて自動判定する回帰テストハーネス。`make test` から呼ばれる。第1引数で任意のバイナリ(例: 修正前バイナリとの比較用)を指定可能。`FORCE_FLAGS` 環境変数で全テストの `FLAGS=` を上書きでき、`make testvm` はこれで全テストを強制的に `-O` 経由で実行する。 |
 
 ## `subc/include/`(`#include` 用スタブヘッダ)
 

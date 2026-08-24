@@ -13,6 +13,12 @@ Task 3(`docs/design/task3-vm-audit-and-design.md`)でポインタ安全性フッ
 (調査開始時点は15/62)。`make test` は67 passed, 0 failed(うち18本が`FLAGS=-O`の
 VM専用回帰テスト、`vm-*.c`/`vm-*-ok.c`)。
 
+さらに踏み込んだ検証として、`make testvm`(`FORCE_FLAGS=-O ./scripts/run-tests.sh`)で
+`demofiles/*.c` **全67本**(通常はツリーウォーカーで実行される53本も含めて)を強制的に
+`-O` で実行し、**それぞれの `.expect` が期待する終了コード・検出メッセージと完全に
+一致することを確認済み**(67 passed, 0 failed)。単に「クラッシュしない」だけでなく、
+「ツリーウォーカーと全く同じ結果になる」ところまで検証できている。
+
 以下、実装済みの機能と、判明している既知の残課題をまとめる。
 
 ## `compileOn()` のASTノード網羅状況(`_do_types` 55種)
@@ -134,6 +140,32 @@ VM専用回帰テスト、`vm-*.c`/`vm-*-ok.c`)。
   到達すればクラッシュする)、`docs/design/vm-implementation-status.md` の
   「未検証」という注記を解消するための、意味の正確化のみの変更。
 
+- **`make testvm`(全 demofiles を強制的に `-O` で実行)で見つかったメッセージ不一致2件**:
+  クラッシュ検出網では引っかからない(検出はできているが、メッセージが違うだけの)
+  真の意味論的乖離。
+  - `prim_vm_store_deref` の `case Memory:` が `setMemory()` にそのまま委譲していたため、
+    ポインタ演算で範囲外に出た書き込み(`pointer-out-of-bounds.c`、
+    `pointer-arithmetic-overflow.c`)が `setMemory()` 自身の境界チェックメッセージ
+    (`"memory offset out of bounds"`)で止まっていた。ツリーウォーカーの `assign()`
+    のDereference/Memoryケースはこれとは別に、もっと早い段階で
+    (`offset < 0 || offset*scale > size-scale`)という独自の境界チェックを行い、
+    `"assigning to out-of-bounds pointer"` という別メッセージで fatal する。
+    `prim_vm_store_deref` にも同じ境界チェック+メッセージを追加(`setMemory()` への
+    委譲はそのチェックを通過した後段で維持、`Tpointer`/`Tstruct` 書き込みなど
+    `setMemory()` が持つ広い型対応は失わない)。
+  - `iGETGVAR` がローカル変数の値を読むとき、`nil`(未代入)かどうかを一切
+    チェックしていなかった。ツリーウォーカーの `eval()` の `Symbol` ケースは
+    `Variable,value` が `nil` なら `"use of uninitialised variable"` で fatal する
+    (`initialiseVariable()` の scalar `default:` ケースは初期化式が無ければ何もせず、
+    宣言時に入っている `nil` がそのまま「未初期化」の目印として残る仕組み)。VM側は
+    この目印を一度も見ておらず、`int a, b = a;` が `-O` だと何の検出もせず正常終了
+    していた(`demofiles/uninitialised.c`)。`iGETGVAR` の2つの解決経路(`env` alist、
+    `Scope_lookup`)双方に同じ `nil` チェックを追加。
+  - どちらも `make testvm` で単に全 `demofiles/*.c` を `-O` 強制実行しただけで
+    見つかった(クラッシュはしないので、それまでの「クラッシュ有無」だけを見る
+    網羅性スイープでは検出できなかった)。修正後、67本全てが完全一致するように
+    なった。
+
 ## 見つけて直した、クラッシュではない静かなバグ
 
 - **`iJMPF` が `nil` としか比較しておらず、`false` を認識できなかった**: `false` の実体は
@@ -179,3 +211,8 @@ VM専用回帰テスト、`vm-*.c`/`vm-*-ok.c`)。
   静かなバグ(ハング、誤った結果)は個別のテストプログラムで手動確認
   (`while`ループの反復回数を変えたテスト、gdbでの `fatal()` へのブレークポイント等)。
 - ツリーウォーカー側(`-O` 無し)は各コミットごとに `make test` で回帰確認。
+- `make testvm`(`scripts/run-tests.sh` の `FORCE_FLAGS` 環境変数で全テストの
+  `FLAGS=` を上書きし、`.expect` は一切変えずに全 `demofiles/*.c` を強制的に
+  `-O` で実行する)で、クラッシュ有無だけでなく期待する終了コード・メッセージまで
+  ツリーウォーカーと一致するかを検証できる。`make demovm` は `demofiles/*.c`+
+  `mydemo/*.c` を `-O` で一括実行する目視確認用(`make demo`/`demov` のVM版)。

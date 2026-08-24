@@ -561,3 +561,33 @@ non-pointer: Integer` で(ツリーウォーカーの「不正な書き込み」
   (元々どちらも到達すればクラッシュする)、意味の正確化のみ。
   `./scripts/run-tests.sh` → 67 passed, 0 failed(無変化)。`-O` 網羅性
   スイープも全77本クラッシュなし(無変化)。
+
+### ツリーウォーカー vs VM の簡易ベンチマーク、`make testvm`/`demovm` の新設
+
+- **ベンチマーク**: 再帰呼び出しが多い処理(`nfib(28)`、約100万回の関数呼び出し)で
+  ツリーウォーカー 3.58秒 → VM(`-O`)0.92秒、**約3.9倍高速**。
+- **`scripts/run-tests.sh`** に `FORCE_FLAGS` 環境変数を追加。設定すると各
+  `.expect` の `FLAGS=` を無視して全テストを指定フラグ(例 `-O`)で強制実行できる。
+  **`Makefile`** に `testvm`(`FORCE_FLAGS=-O ./scripts/run-tests.sh`、
+  `demofiles/*.c` 全67本を強制的にVM経由で実行し、通常の `.expect` 判定基準
+  (終了コード・検出メッセージ)と完全一致するか検証)と `demovm`
+  (`demofiles/*.c`+`mydemo/*.c` を `-O` で一括実行する目視確認用、`demo`/`demov`
+  のVM版)を追加。
+- **`make testvm` で新たに2件のメッセージ不一致を発見・修正**(いずれも
+  「検出はできているが、ツリーウォーカーとメッセージが違う」ため、それまでの
+  クラッシュ有無だけを見る網羅性スイープでは見つからなかったもの):
+  1. `prim_vm_store_deref` の `case Memory:` が `setMemory()` に丸投げしていたため、
+     ポインタ演算で範囲外に出た書き込み(`pointer-out-of-bounds.c`、
+     `pointer-arithmetic-overflow.c`)が `"memory offset out of bounds"`
+     (`setMemory()` 自身の境界チェック)で止まっていた。ツリーウォーカーの
+     `assign()` のDereference/Memoryケースが持つ、より早い段階での独自の境界
+     チェック(`"assigning to out-of-bounds pointer"`)を追加。
+  2. `iGETGVAR` がローカル変数を読むとき `nil`(未代入)かどうかを一切チェック
+     しておらず、`int a, b = a;` が `-O` だと何の検出もせず正常終了していた
+     (`demofiles/uninitialised.c`)。ツリーウォーカーの `eval()` の `Symbol`
+     ケースが持つ `"use of uninitialised variable"` チェックを追加。
+  - `make testvm` → **67 passed, 0 failed**(修正前は3件failed)。`demofiles/*.c`
+    **全67本**が、通常はツリーウォーカーで実行される53本も含めて強制的にVM経由で
+    実行しても完全に一致することを確認 —— 「クラッシュしない」だけでなく
+    「ツリーウォーカーと全く同じ結果になる」ところまで検証できたことになる。
+  - `docs/design/vm-implementation-status.md` を更新(この検証結果と2件の修正を記録)。
