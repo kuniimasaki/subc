@@ -40,7 +40,10 @@ fisr : main
 	./main -vv mydemo/fisr.c
 
 fib : main
-	./main -vv mydemo/fib.c
+	./main mydemo/fib.c
+	
+fibvm : main
+	./main -O mydemo/fib.c
 
 dang : main
 	./main -vv demofiles/dangling-pointer.c
