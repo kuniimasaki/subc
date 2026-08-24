@@ -41,7 +41,7 @@
 | `stdio.h` | `printf` の `extern` 宣言のみのスタブ。 |
 | `assert.h` | `assert` の `extern` 宣言のみのスタブ。 |
 | `stdint.h` | `intptr_t` の `typedef` のみのスタブ。 |
-| `string.h` | 空ファイル(現状 `string.h` 系関数は未サポート、`#include` してもエラーにならないためのプレースホルダ)。 |
+| `string.h` | `strlen`/`strcpy`/`strcat`/`strcmp`/`memcpy`/`memset` の `extern` 宣言(`main.leg` の `prim_str*`/`prim_mem*` にバックエンドあり)。`strcpy`/`strcat` はバッファオーバーフロー検出付き。文字列リテラルは直接引数に渡さず一度 `char *` 変数へ代入すること、配列は `&arr[0]` の形で渡すことがこの言語の制約上必要。 |
 
 ## `subc/demofiles/`(メモリバグ検出の回帰テスト集)
 
@@ -84,6 +84,9 @@
 | `pointer-index-assign.c` | `malloc` したポインタへの `p[i] = x`(添字代入)。Task 1 で未実装だったバグの回帰テスト。 |
 | `pointer-init-no-double-eval.c` | ポインタ初期化式が二重評価されないことの確認(リーク誤検知バグの回帰テスト)。 |
 | `struct-null-pointer-field.c` | 構造体フィールドへの NULL ポインタ格納(`setMemory` の `Integer` ケース、Task 1 の回帰テスト)。 |
+| `string-functions-ok.c` | `string.h` の6関数(`strlen`/`strcpy`/`strcat`/`strcmp`/`memcpy`/`memset`)の正しさを一括確認する陰性ケース。 |
+| `strcpy-buffer-overflow.c` | `strcpy()` で確保先バッファより長い文字列をコピーするバッファオーバーフローを検出。 |
+| `strlen-use-after-free.c` | 解放済みポインタへの `strlen()` が use-after-free として検出されることを確認。 |
 | `malloc-negative-size.c` | `malloc()` に負のサイズを渡すケースを拒否することの確認。 |
 | `calloc-ok-zero-init.c` | `calloc()` がゼロ初期化された領域を返すことの確認。 |
 | `calloc-invalid-negative.c` | `calloc()` に不正な(負の)引数を渡すケースを拒否することの確認。 |

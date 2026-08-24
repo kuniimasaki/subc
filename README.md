@@ -217,5 +217,22 @@ make demo     # demofiles/*.c を全件実行(目視確認用)
 - 追加テスト: `vm-loop-local-decl-ok.c`。`make test`/`make testvm` → 68 passed,
   0 failed(修正前は67)。
 
+**`include/string.h` を拡充: `strlen`/`strcpy`/`strcat`/`strcmp`/`memcpy`/`memset` を実装**
+- `docs/design/task2-feature-inventory-and-proposal.md` が推奨していた項目に対応。
+  `strcpy`/`strcat` は1バイトずつ `setMemory()` 経由で書き込むため、確保先バッファより
+  長い文字列をコピーすると他の subc の書き込みと全く同じ `"memory offset out of
+  bounds"` 検出が発火する(本物のlibcなら黙って隣接メモリを破壊するところ)。
+  `strlen`/`strcpy`/`strcat`/`strcmp` は `requireNotFreed()` も経由するため、
+  解放済みポインタへの使用は use-after-free として検出される。
+- **副次的に発見・修正した既存バグ**: `char *s = "literal";` という宣言時の文字列
+  リテラル代入が、ツリーウォーカー(`initialiseVariable()`)・VM(`prim_vm_coerce`)
+  どちらも生の `String` オブジェクトをそのまま(または未変換のまま)扱っており、
+  正しい `Memory` ブロックに変換されていなかった(再代入時の同じケースは正しく
+  変換していたのと対照的)。`assign()` と同じロジックに揃えて修正し、この基本的な
+  宣言が初めて正しく動くようになった。
+- 追加テスト: `string-functions-ok.c`、`strcpy-buffer-overflow.c`、
+  `strlen-use-after-free.c`。`make test`/`make testvm` → 71 passed, 0 failed
+  (修正前は68)。
+
 各修正は独立したコミットに分割し、コミットのたびに `demofiles/*.c` 全件を実行して
 既存の検出結果(非決定的なヒープアドレスを除く)が意図せず変化していないことを確認している。

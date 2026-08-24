@@ -14,6 +14,22 @@ This document is research/design only. No changes were made to `main.leg` or `ma
 > `requireNotFreed()`, covering `setMemory()` and the `*p = rhs` path) and `7e189cc`
 > (`p[i] = x` support). `demofiles/use-after-free.c` line 14 is now caught. The
 > realloc/calloc proposals below remain open and are unaffected by this update.
+>
+> **Update (2026-08-24):** `realloc`/`calloc` were implemented (Task 2, `2f05bc0`).
+> The "`strdup`/`strlen`/`strcpy`/`memcpy`/other string/mem builtins" row further
+> below has also now been addressed: `strlen`/`strcpy`/`strcat`/`strcmp`/`memcpy`/
+> `memset` are implemented (not `strdup`), backed by `include/string.h`. `strcpy`/
+> `strcat` write through `setMemory()` byte-by-byte so a classic overflow into an
+> undersized buffer is caught by the existing bounds check rather than corrupting
+> memory — the exact motivation this doc gave for adding them. Along the way, found
+> and fixed a real pre-existing bug this surfaced: `char *s = "literal";`
+> (declaration-time string-to-pointer conversion) wrapped the raw `String` object
+> itself as `Pointer,base` instead of a proper `Memory` block, in both
+> `initialiseVariable()` (tree-walker) and `prim_vm_coerce` (VM) -- unrelated to
+> string.h specifically, but only actually exercised once something (`strlen`,
+> `assert(ptr!=0)`-style pointer use, etc.) needed the pointer to behave like a
+> real pointer rather than just sit there unused. See `demofiles/string-functions-ok.c`,
+> `strcpy-buffer-overflow.c`, `strlen-use-after-free.c`.
 
 ---
 

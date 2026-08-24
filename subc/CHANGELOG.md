@@ -644,3 +644,39 @@ vs VM を比較しようとしたところ、VMだけが極端に遅く(数分�
 代わりに `toStringOn()` が扱える生の `Function` ノード)を `-vv` の結果表示
 (`"=> %s"`)に渡すと落ちていた(`-O` 単体・`-vv` 単体では踏まない組み合わせ)。
 `Closure,function` へ委譲するだけの `case Closure:` を追加して解決。
+
+### `include/string.h` を拡充: `strlen`/`strcpy`/`strcat`/`strcmp`/`memcpy`/`memset` を実装
+
+`docs/design/task2-feature-inventory-and-proposal.md` が「未対応、追加すべき」と明記していた
+項目(特に `strcpy`/`strcat` は文字列バッファオーバーフローという典型的なメモリバグパターンを
+検出できるようにする狙いで推奨されていた)に対応。
+
+- `strcpy`/`strcat` は1バイトずつ `setMemory()` を経由して書き込む(生の `memcpy` で
+  バックエンドのバッファ同士をコピーするのではなく)。これにより、確保先バッファより
+  長い文字列をコピーすると、他の全ての subc の書き込みと**全く同じ**
+  `"memory offset out of bounds"` 検出が発火する —— 本物のlibcなら黙って隣接メモリを
+  破壊するところを、検出できるようにするというこの追加の一番の狙い。
+- `strlen`/`strcpy`/`strcat`/`strcmp` は共通ヘルパー `cStringBase()`/`cStringLen()`
+  経由でポインタを解決。`pointerString()`(既存の `atoi`/`printf("%s",...)` が使う
+  ヘルパー)と違い、ポインタ自身の `,offset` を尊重する(`pointerString()` は常に
+  バッファの**先頭**から走査するため、`strcpy(buf+5, "x")` のような前進済みポインタでは
+  誤動作する、既存の別のバグ。今回は触れていない)。`requireNotFreed()` も経由するため、
+  解放済みポインタへの `strlen()` 等は use-after-free として検出される。
+- `memcpy`/`memset` は `Memory` ブロックの生バイト単位で動作し、範囲外アクセスは
+  専用のメッセージで fatal する。
+- **副次的に発見・修正した既存バグ**: `char *s = "literal";` のような**宣言時**の
+  文字列リテラル代入が、ツリーウォーカーの `initialiseVariable()` では生の `String`
+  オブジェクトをそのまま `Pointer,base` として包んでしまい(`Memory` ブロックを
+  経由しない)、VMの `prim_vm_coerce` に至っては `String` を全く処理せず値をそのまま
+  通していた(`assign()` の**再代入**時の同じケースは正しく `Memory` ブロックへ変換
+  していたのと対照的)。今回の string.h 実装で初めてこの不整合が表面化(`cStringBase()`
+  が「バッファへのポインタではない」と正しく拒否 → その拒否メッセージを組み立てる
+  `toString()` 自体が壊れた `Pointer` を渡されて別のエラーで落ちる、という形で発見)。
+  両方とも `assign()` のString処理(`STRDUP`+`newMemory`)と同じロジックに揃えて修正。
+  `char *s = "literal";` という基本的な宣言が、ツリーウォーカー・VM問わず初めて
+  正しく動くようになった。
+- 追加テスト: `string-functions-ok.c`(6関数の正しさを一括確認)、
+  `strcpy-buffer-overflow.c`(バッファオーバーフロー検出)、
+  `strlen-use-after-free.c`(解放済みポインタへの `strlen()` がuse-after-freeとして
+  検出されることを確認)。
+- `./scripts/run-tests.sh`・`make testvm` → 71 passed, 0 failed(修正前は68)。

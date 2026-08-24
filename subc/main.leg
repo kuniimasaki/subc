@@ -106,7 +106,8 @@ char *binaryName(int op) {
 #undef _
 
 #define _do_primitives(_)							\
-    _(printf) _(assert) _(malloc) _(free) _(realloc) _(calloc) _(exit) _(abort) _(atoi) _(sqrtf)
+    _(printf) _(assert) _(malloc) _(free) _(realloc) _(calloc) _(exit) _(abort) _(atoi) _(sqrtf) \
+    _(strlen) _(strcpy) _(strcat) _(strcmp) _(memcpy) _(memset)
 
 #define _(X) oop s_##X = 0;
 _do_primitives(_)
@@ -2791,6 +2792,143 @@ oop prim_sqrtf(int argc, oop *argv, oop env) // array
     return newFloat(sqrtf(_floatValue(arg)));
 }
 
+oop setMemory(oop memory, int offset, oop type, oop value); // defined below, near getMemory
+
+// Shared by strlen/strcpy/strcat/strcmp: resolves a char* argument to its
+// backing Memory block, honouring the pointer's own ,offset (unlike
+// pointerString(), which always scans from the block's start -- wrong for
+// an advanced pointer like `strcpy(buf + 5, "x")`), and reports how many
+// bytes remain from that point to the end of the block, so a null
+// terminator is never searched for past the buffer's real bounds.
+char *cStringBase(oop ptr, char *who, int *outRemaining)
+{
+    if (!is(Pointer, ptr)) fatal("%s: argument is not a pointer", who);
+    oop mem = pointerMemory(ptr);
+    if (nil == mem) fatal("%s: argument is not a pointer into a buffer: %s", who, toString(ptr));
+    requireNotFreed(mem, "reading");
+    char *addr = (char *)get(mem, Memory,base) + get(ptr, Pointer,offset);
+    int remaining = get(mem, Memory,size) - get(ptr, Pointer,offset);
+    if (remaining < 0) fatal("%s: pointer out of bounds: %s", who, toString(ptr));
+    *outRemaining = remaining;
+    return addr;
+}
+
+// Byte offset of ptr's own null terminator, scanned only within the
+// buffer's actual remaining bounds -- an overflowing/unterminated source
+// or destination fatals here (with subc's usual detection-not-corruption
+// stance) instead of memchr() silently reading past the block.
+int cStringLen(oop ptr, char *who)
+{
+    int remaining;
+    char *addr = cStringBase(ptr, who, &remaining);
+    void *term = memchr(addr, '\0', remaining);
+    if (!term) fatal("%s: unterminated string: %s", who, toString(ptr));
+    return (char *)term - addr;
+}
+
+oop prim_strlen(int argc, oop *argv, oop env) // array
+{
+    if (argc != 1) fatal("strlen: wrong number of arguments");
+    return newInteger(cStringLen(argv[0], "strlen"));
+}
+
+oop prim_strcpy(int argc, oop *argv, oop env) // array
+{
+    // writes through setMemory() one byte at a time (rather than a raw
+    // memcpy of the backing buffers) specifically so overflowing the
+    // destination hits the exact same "memory offset out of bounds"
+    // detection every other subc write does -- this is the whole point
+    // of implementing strcpy() at all (see docs/design/
+    // task2-feature-inventory-and-proposal.md's original recommendation):
+    // the classic strcpy-into-too-small-a-buffer bug should be caught,
+    // not silently corrupt adjacent memory the way real libc would.
+    if (argc != 2) fatal("strcpy: wrong number of arguments");
+    oop dst = argv[0], src = argv[1];
+    int len = cStringLen(src, "strcpy"); // validates src is a pointer too
+    int remaining;
+    char *saddr = cStringBase(src, "strcpy", &remaining);
+    if (!is(Pointer, dst)) fatal("strcpy: destination is not a pointer");
+    oop dbase = get(dst, Pointer,base);
+    if (!is(Memory, dbase)) fatal("strcpy: destination is not a pointer into a buffer: %s", toString(dst));
+    for (int i = 0;  i <= len;  ++i) // <= to include the null terminator
+	setMemory(dbase, get(dst, Pointer,offset) + i, t_char, newInteger((unsigned char)saddr[i]));
+    return dst;
+}
+
+oop prim_strcat(int argc, oop *argv, oop env) // array
+{
+    if (argc != 2) fatal("strcat: wrong number of arguments");
+    oop dst = argv[0], src = argv[1];
+    int dlen = cStringLen(dst, "strcat");
+    int slen = cStringLen(src, "strcat");
+    int remaining;
+    char *saddr = cStringBase(src, "strcat", &remaining);
+    oop dbase = get(dst, Pointer,base); // cStringLen(dst,...) already confirmed this resolves to Memory
+    for (int i = 0;  i <= slen;  ++i)
+	setMemory(dbase, get(dst, Pointer,offset) + dlen + i, t_char, newInteger((unsigned char)saddr[i]));
+    return dst;
+}
+
+oop prim_strcmp(int argc, oop *argv, oop env) // array
+{
+    if (argc != 2) fatal("strcmp: wrong number of arguments");
+    int aremaining, bremaining;
+    char *a = cStringBase(argv[0], "strcmp", &aremaining);
+    char *b = cStringBase(argv[1], "strcmp", &bremaining);
+    for (int i = 0;  ;  ++i) {
+	if (i >= aremaining) fatal("strcmp: unterminated string: %s", toString(argv[0]));
+	if (i >= bremaining) fatal("strcmp: unterminated string: %s", toString(argv[1]));
+	unsigned char ca = a[i], cb = b[i];
+	if (ca != cb) return newInteger((int)ca - (int)cb);
+	if (0 == ca) return newInteger(0);
+    }
+}
+
+oop prim_memcpy(int argc, oop *argv, oop env) // array
+{
+    if (argc != 3) fatal("memcpy: wrong number of arguments");
+    oop dst = argv[0], src = argv[1], narg = argv[2];
+    if (!is(Pointer, dst)) fatal("memcpy: destination is not a pointer");
+    if (!is(Pointer, src)) fatal("memcpy: source is not a pointer");
+    if (!is(Integer, narg)) fatal("memcpy: size is not an integer");
+    long n = _integerValue(narg);
+    if (n < 0) fatal("memcpy: negative size");
+    oop dmem = pointerMemory(dst);
+    oop smem = pointerMemory(src);
+    if (nil == dmem) fatal("memcpy: destination is not a pointer into a buffer: %s", toString(dst));
+    if (nil == smem) fatal("memcpy: source is not a pointer into a buffer: %s", toString(src));
+    requireNotFreed(dmem, "writing");
+    requireNotFreed(smem, "reading");
+    int  dscale = typeSize(get(get(dst, Pointer,type), Tpointer,target));
+    int  sscale = typeSize(get(get(src, Pointer,type), Tpointer,target));
+    long doff   = (long)get(dst, Pointer,offset) * dscale;
+    long soff   = (long)get(src, Pointer,offset) * sscale;
+    if (doff < 0 || doff + n > get(dmem, Memory,size)) fatal("memcpy: destination out of bounds");
+    if (soff < 0 || soff + n > get(smem, Memory,size)) fatal("memcpy: source out of bounds");
+    memmove((char *)get(dmem, Memory,base) + doff, (char *)get(smem, Memory,base) + soff, n);
+    return dst;
+}
+
+oop prim_memset(int argc, oop *argv, oop env) // array
+{
+    if (argc != 3) fatal("memset: wrong number of arguments");
+    oop dst = argv[0], valueArg = argv[1], narg = argv[2];
+    if (!is(Pointer, dst)) fatal("memset: destination is not a pointer");
+    if (!is(Integer, valueArg)) fatal("memset: value is not an integer");
+    if (!is(Integer, narg)) fatal("memset: size is not an integer");
+    int  value = (int)_integerValue(valueArg);
+    long n     = _integerValue(narg);
+    if (n < 0) fatal("memset: negative size");
+    oop dmem = pointerMemory(dst);
+    if (nil == dmem) fatal("memset: destination is not a pointer into a buffer: %s", toString(dst));
+    requireNotFreed(dmem, "writing");
+    int  dscale = typeSize(get(get(dst, Pointer,type), Tpointer,target));
+    long doff   = (long)get(dst, Pointer,offset) * dscale;
+    if (doff < 0 || doff + n > get(dmem, Memory,size)) fatal("memset: destination out of bounds");
+    memset((char *)get(dmem, Memory,base) + doff, value, n);
+    return dst;
+}
+
 void declareTag(oop type)
 {
     oop members = get(type, Tstruct,members);
@@ -3678,6 +3816,18 @@ oop prim_vm_coerce(int argc, oop *argv, oop env)
 	    return value;
 	}
 	if (is(Integer, value) && !_integerValue(value)) return newPointer(type, value, 0);
+	if (is(String, value)) {
+	    // mirrors initialiseVariable()'s Tpointer/String case (the fix
+	    // there applies to the tree-walker; VarDecls under -O calls this
+	    // primitive instead, which had no String handling at all -- a
+	    // declaration like `char *s = "literal";` under -O bound s
+	    // straight to the raw String object, not even wrapped in a
+	    // Pointer, so every later use of s as a pointer failed).
+	    if (type != t_pchar) fatal("cannot initialise '%s' with string literal", toString(type));
+	    char *chars  = STRDUP(String_cString(value));
+	    oop   memory = newMemory(chars, strlen(chars) + 1, 0);
+	    return newPointer(type, memory, 0);
+	}
     }
     return value;
 }
@@ -4167,8 +4317,24 @@ void initialiseVariable(oop var, int local)
 		    break;
 		}
 		case String: {
+		    // mirrors assign()'s Variable/String case (used for later
+		    // reassignment, `p = "literal";`) -- this declaration-time
+		    // path used to wrap the *raw String object itself* as
+		    // Pointer,base instead of a proper Memory block, so
+		    // `char *s = "literal";` (an extremely common idiom) produced
+		    // a pointer pointerMemory()/most Memory-consuming code
+		    // couldn't recognize as a real buffer at all (confirmed via
+		    // the new string.h primitives below: cStringBase() correctly
+		    // rejected it, but toStringOn()'s own Pointer case then choked
+		    // trying to describe the malformed pointer in the resulting
+		    // fatal() message). Every other pointer initialiser already
+		    // goes through requireNotFreed()/Memory-shaped bounds checks;
+		    // this is the one type of initialiser value that skipped
+		    // acquiring a Memory backing at all.
 		    if (type != t_pchar) fatal("cannot initialise '%s' with string literal", toString(type));
-		    value = newPointer(type, value, 0);
+		    char *chars  = STRDUP(String_cString(value));
+		    oop   memory = newMemory(chars, strlen(chars) + 1, 0);
+		    value = newPointer(type, memory, 0);
 		    set(var, Variable,value, value);
 		    break;
 		}
