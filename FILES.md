@@ -118,6 +118,7 @@
 | `vm-dangling-pointer.c` | `-O` でも `dangling-pointer.c` と同じスコープ終了処理(dangling pointer検出)が効くことの確認(`iRETURN`のisdead付与+`prim_vm_store_deref`のisdeadチェック追加の回帰テスト)。 |
 | `vm-dangling-pointer-ok-alive.c` | `-O` での陰性ケース: `&i` を渡した別関数がまだ呼び出しスタック上にある間の使用は誤って dead 扱いされないことの確認。 |
 | `vm-deep-recursion-ok.c` | `-O` の値/フレームスタックが動的に伸びること(旧: 固定32要素で深い再帰が溢れていたバグ)の確認。深さ5000の再帰が正しく動作することを検証。 |
+| `vm-cast-chain-invalid-pointer.c` | `-O` でも `invalid-pointer.c` 後半と同じキャスト連鎖(`(int*)(intptr_t)N` の非ゼロ整数のポインタ再代入)が検出されることの確認(`coerceAssignedValue()`/`prim_vm_store_symbol` 追加の回帰テスト)。 |
 | `evalasan.txt` | `demofiles/Makefile` の `asan_run` で記録した、AddressSanitizer による各バグパターンの実行結果ログ(比較用の参考資料)。 |
 | `evalvar.txt` | 同 `demo`(Valgrind)ターゲットで記録した実行結果ログ(比較用の参考資料)。 |
 | `Makefile` | `demofiles/*.c` を素の gcc / ASan / Valgrind でコンパイル・実行するための補助 Makefile(subc本体のインタプリタとは独立に、比較対象を作るためのもの)。 |

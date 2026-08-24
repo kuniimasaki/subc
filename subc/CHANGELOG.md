@@ -498,3 +498,43 @@ opcodeではなく既存の `iCALL`/`Primitive` 経由のプリミティブ呼�
   全76本が引き続きクラッシュなく完走。
 - `docs/design/vm-implementation-status.md` を更新(既知の残課題からこの項目を削除、
   実装の勘所に追記)。
+
+### VM(`-O`)にtypedefを挟んだキャスト連鎖(`invalid-pointer.c`)の検出漏れを修正
+
+残課題3件目に対応。`ptr = (int *)(intptr_t)0xDeadD0d0;` のような、非ゼロ整数を
+ポインタ型変数へ再代入するキャストが `-O` 経由だと `Pointer` にならず生の
+`Integer` のままになり、後続の `printf("%p", ...)` が `%p conversion of
+non-pointer: Integer` で(ツリーウォーカーの「不正な書き込み」検出とは
+無関係な理由で)止まっていたバグを修正。
+
+- 調査の結果、キャスト自体(`prim_vm_cast`)はツリーウォーカーの `eval()` の
+  Castケースと寸分違わず同じロジックで、`(int *)(long)N` の変換テーブル
+  エントリが恒等関数 `cvt_` である(=キャストだけでは `Integer` のまま)のは
+  **両方の経路で意図された挙動**と判明。ツリーウォーカー側が実際に検出できて
+  いたのは、`assign()` の `case Variable:`(再代入)が「代入先がポインタ型
+  なら、右辺の裸の `Integer`/`Array`/`String`/型違いの `Pointer` を無条件で
+  `Pointer{base=...}` に包む」という変換を毎回行っていたから。VM側の
+  `compileOn` の `Assign` `default:`(裸シンボルへの代入)はただの `iSETGVAR`
+  で、この変換を一切行っていなかった(宣言時の初期化子だけを扱う
+  `prim_vm_coerce` とは別の、再代入専用の変換ロジックが丸ごと欠けていた)。
+- `assign()` の `case Variable:` から変換ロジックを `coerceAssignedValue()`
+  として切り出し、新設の `prim_vm_store_symbol`(裸シンボルへの代入を
+  `iGETGVAR`/`iSETGVAR` と全く同じ手順(`env` alist → `Scope_lookup` →
+  最後の手段として素の `Symbol,value`)でVariableボックスを解決してから
+  同じ変換をかける)と両方から呼ぶように統一。ツリーウォーカーとVMが同じ
+  1本のロジックを共有するようになったため、今後この種の乖離が再発しにくい。
+- **副次的に発見**: `prim_vm_store_deref`(`*p = rhs`)の `switch(getType(base))`
+  に `case Integer:`(`(void*)(intptr_t)N` のような、変数でもメモリブロック
+  でもない整数をbaseに持つポインタ)が無く、汎用の `"cannot store through
+  pointer"` に落ちていた。`assign()` のDereferenceケースが持つ専用メッセージ
+  (`"attempt to store into arbitrary memory location"`)を追加してツリーウォーカー
+  と一致させた。
+- 追加テスト: `vm-cast-chain-invalid-pointer.c`(`demofiles/invalid-pointer.c`
+  の後半と同じキャスト連鎖を `-O` で実行し、ツリーウォーカーと全く同じ
+  メッセージで検出されることを確認)。
+- `./scripts/run-tests.sh` → 67 passed, 0 failed(修正前は66)。
+  `demofiles/*.c`(67本)+`mydemo/*.c`(10本)、計77本の `-O` 網羅性スイープは
+  全77本が引き続きクラッシュなく完走。`assign()` を触ったため、ツリーウォーカー側
+  (`-O` 無し)の全回帰(既存67テスト中の非VMテスト)も無変化であることを確認。
+- `docs/design/vm-implementation-status.md` を更新(既知の残課題からこの項目を削除、
+  実装の勘所に追記)。残るは「`fisr.c` の数値精度」1件のみ。

@@ -3604,6 +3604,8 @@ oop prim_vm_store_deref(int argc, oop *argv, oop env)
 	}
 	case Memory:
 	    return setMemory(base, offset * typeSize(type), type, rhs);
+	case Integer: // (void *)(intptr_t)N -- mirrors assign()'s Dereference/Integer case
+	    fatal("attempt to store into arbitrary memory location");
 	default:
 	    fatal("cannot store through pointer: %s", toString(ptr));
     }
@@ -3806,42 +3808,81 @@ oop prim_vm_store_member(int argc, oop *argv, oop env)
     return setMemory(memory, offset, vtype, rhs);
 }
 
+// shared by assign()'s Variable case (below) and the VM's
+// prim_vm_store_symbol (plain `x = expr;` reassignment, as opposed to a
+// VarDecls initialiser): when the assignment target is pointer-typed,
+// coerce a bare Integer/Array/String/mismatched-Pointer rhs into a
+// Pointer of the target's exact type, so both the tree-walker and the
+// VM apply the identical rule for e.g. `ptr = (int *)(intptr_t)N;`
+// (an Integer must become Pointer{base=Integer}, not stay a bare
+// Integer, for the existing "arbitrary memory location" detection in
+// getPointer/setMemory's Integer-base case to ever get a chance to
+// fire). `errCtx` is only used to name the target in the fatal message.
+oop coerceAssignedValue(oop ltype, oop errCtx, oop rhs)
+{
+    if (!is(Tpointer, ltype)) return rhs;
+    switch (getType(rhs)) {
+	case Integer:
+	    return newPointer(ltype, rhs, 0);
+	case Pointer:
+	    if (get(rhs, Pointer,type) != ltype)
+		return newPointer(ltype, get(rhs, Pointer,base), get(rhs, Pointer,offset));
+	    return rhs;
+	case Array:
+	    return newPointer(ltype, get(rhs, Array,base), 0);
+	case String: {
+	    if (t_pchar == ltype) {
+		char *chars  = STRDUP(String_cString(rhs));
+		oop   memory = newMemory(chars, strlen(chars) + 1, 0);
+		return newPointer(ltype, memory, 0);
+	    }
+	} // FALL THROUGH
+	default:
+	    fatal("cannot assign: %s = %s'", toString(errCtx), toString(rhs));
+    }
+    return rhs; // unreachable
+}
+
+// VM's `x = expr;` reassignment (compileOn's Assign default: case, when
+// lhs is a bare Symbol -- as opposed to Dereference/Index/Member, which
+// already have their own prim_vm_store_* primitives). Unlike VarDecls's
+// initialiser coercion (prim_vm_coerce, which only special-cases a NULL
+// Integer, mirroring initialiseVariable()'s stricter declaration-time
+// rule), plain reassignment must match assign()'s Variable case exactly
+// -- e.g. `ptr = (int *)(intptr_t)0xDeadD0d0;` needs the Integer wrapped
+// into a Pointer{base=Integer} unconditionally, non-zero included, or
+// the existing "arbitrary memory location" detection never triggers.
+// Resolves the symbol the same way iGETGVAR/iSETGVAR do (env alist first,
+// then Scope_lookup for declare()'d globals), so it sees the exact same
+// Variable box either opcode would -- and, like iSETGVAR, falls back to
+// the untyped Symbol,value slot when neither resolves (still applies no
+// coercion there, since no declared type is available; unchanged from
+// iSETGVAR's prior behaviour for that fallback case).
+oop prim_vm_store_symbol(int argc, oop *argv, oop env)
+{
+    if (argc != 2) fatal("internal: prim_vm_store_symbol wrong arity");
+    oop sym = argv[0], rhs = argv[1];
+    oop keyval = assoc(env, sym);
+    if (nil != keyval) {
+	oop box = get(keyval, Pair,tail);
+	rhs = coerceAssignedValue(get(box, Variable,type), box, rhs);
+	return set(box, Variable,value, rhs);
+    }
+    oop resolved = Scope_lookup(sym);
+    if (resolved && is(Variable, resolved)) {
+	rhs = coerceAssignedValue(get(resolved, Variable,type), resolved, rhs);
+	return set(resolved, Variable,value, rhs);
+    }
+    return set(sym, Symbol,value, rhs);
+}
+
 oop assign(oop lhs, oop rhs)
 {
     oop dst = lhs;
     if (is(Symbol, lhs)) lhs = Scope_lookup(lhs);
     switch (getType(lhs)) {
 	case Variable: {
-	    oop ltype = get(lhs, Variable,type);
-	    if (is(Tpointer, ltype)) {
-		switch (getType(rhs)) {
-		    case Integer: {
-			rhs = newPointer(ltype, rhs, 0);
-			break;
-		    }
-		    case Pointer: {
-			if (get(rhs, Pointer,type) != ltype)
-			    rhs = newPointer(ltype, get(rhs, Pointer,base), get(rhs, Pointer,offset));
-			break;
-		    }
-		    case Array: {
-			rhs = newPointer(ltype, get(rhs, Array,base), 0);
-			break;
-		    }
-		    case String: {
-			if (t_pchar == ltype) {
-			    char *chars  = STRDUP(String_cString(rhs));
-			    oop   memory = newMemory(chars, strlen(chars) + 1, 0);
-			    rhs = newPointer(ltype, memory, 0);
-			    break;
-			}
-		    } // FALL THROUGH
-		    default: {
-			fatal("cannot assign: %s = %s'",
-			      toString(lhs), toString(rhs));
-		    }
-		}
-	    }
+	    rhs = coerceAssignedValue(get(lhs, Variable,type), lhs, rhs);
 	    return set(lhs, Variable,value, rhs);
 	}
 	case Index: {
@@ -5455,6 +5496,23 @@ void compileOn(oop exp, oop program, oop cs, oop bs)
 		    return;
 		}
 		default: {
+		    if (is(Symbol, lhs)) {
+			// plain `x = expr;` reassignment (VarDecls' own
+			// initialiser goes through prim_vm_coerce instead --
+			// this is specifically the *later* re-assignment
+			// case). Routes through prim_vm_store_symbol rather
+			// than a bare iSETGVAR so a pointer-typed target gets
+			// the same Integer/Array/String/mismatched-Pointer
+			// coercion assign()'s Variable case applies in the
+			// tree-walker (see coerceAssignedValue).
+			static oop p_store_symbol = 0;
+			if (!p_store_symbol) p_store_symbol = newPrimitive(intern("x="), nil, nil, prim_vm_store_symbol);
+			compileOn(rhs, program, cs, bs);	// value (argv[1]), pushed first
+			EMITio(iPUSH, lhs);			// the symbol itself (argv[0]), NOT iGETGVAR'd, pushed last
+			EMITio(iPUSH, p_store_symbol);
+			EMITii(iCALL, 2);
+			return;
+		    }
 		    compileOn(rhs, program, cs, bs);
 		    EMITio(iSETGVAR, lhs);
 		    return;

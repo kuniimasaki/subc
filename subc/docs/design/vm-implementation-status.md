@@ -8,9 +8,9 @@ Task 3(`docs/design/task3-vm-audit-and-design.md`)でポインタ安全性フッ
 
 ## 現在の状態(2026-08-24 時点)
 
-`demofiles/*.c`(66本)+ `mydemo/*.c`(10本)、計76本を `-O` で実行した結果、
-**全76本が `compileOn()`/`execute()` レベルのクラッシュなく最後まで実行できる**
-(調査開始時点は15/62)。`make test` は66 passed, 0 failed(うち17本が`FLAGS=-O`の
+`demofiles/*.c`(67本)+ `mydemo/*.c`(10本)、計77本を `-O` で実行した結果、
+**全77本が `compileOn()`/`execute()` レベルのクラッシュなく最後まで実行できる**
+(調査開始時点は15/62)。`make test` は67 passed, 0 failed(うち18本が`FLAGS=-O`の
 VM専用回帰テスト、`vm-*.c`/`vm-*-ok.c`)。
 
 以下、実装済みの機能と、判明している既知の残課題をまとめる。
@@ -85,6 +85,34 @@ VM専用回帰テスト、`vm-*.c`/`vm-*-ok.c`)。
   積む、`iCALL` のクロージャ分岐も同様に `fp==0` で伸長してからフレームを積む。
   深さ5000の再帰(`depth(5000)`)で正しく動作すること、`nfib(32)`
   (以前は深さ32でスタックオーバーフローしていたケース)が最後まで完走することを確認。
+- **プレーンな再代入(`x = expr;`)でのポインタ強制変換**: `int *p = malloc(...)`
+  のような**宣言時**の初期化子は `prim_vm_coerce` が(`initialiseVariable()` の
+  Tpointerケースを模して)coerceするが、それはあくまで宣言のときだけの話。
+  `ptr = (int *)(intptr_t)0xDeadD0d0;` のような**再代入**は、`compileOn` の
+  `Assign` の `default:`(裸のシンボルへの代入)がただの `iSETGVAR` で、
+  型を一切見ずに評価結果をそのまま突っ込んでいた。キャスト
+  `(int *)(intptr_t)N` 自体は(`eval()`のCastケースと同じロジックを
+  `prim_vm_cast` がそのままミラーしているため)ツリーウォーカーと同じく
+  生の `Integer` を返す(この段では正しい、意図的な挙動)。ツリーウォーカーが
+  検出できていたのは、`assign()` の `case Variable:` が
+  「再代入先がポインタ型なら、右辺の裸の `Integer`/`Array`/`String`/
+  型違いの `Pointer` を全て強制的に `Pointer{base=...}` に包む」という
+  無条件の変換を再代入のたびに行っているから。この変換ロジックを
+  `coerceAssignedValue()` として切り出し、`assign()` の `case Variable:` と
+  VM新設の `prim_vm_store_symbol`(裸シンボルへの代入を `iGETGVAR`/`iSETGVAR`
+  と全く同じ手順(`env` alist → `Scope_lookup` → 最後の手段として素の
+  `Symbol,value`)でVariableボックスを解決してから同じ変換をかける)の
+  両方から呼ぶように統一。
+  - **副次的に発見**: `prim_vm_store_deref`(`*p = rhs`)の `switch(getType(base))`
+    には `case Integer:`(`(void*)(intptr_t)N` のような「変数でもメモリブロック
+    でもない、ただの整数をbaseに持つポインタ」)が無く、汎用の
+    `"cannot store through pointer"` に落ちていた。`assign()` の
+    Dereferenceケースが持つ専用メッセージ
+    (`"attempt to store into arbitrary memory location"`)を追加してツリーウォーカー
+    と一致させた。
+  - 追加テスト: `vm-cast-chain-invalid-pointer.c`(`demofiles/invalid-pointer.c` の
+    後半部分と同じキャスト連鎖を `-O` で実行し、ツリーウォーカーと全く同じ
+    メッセージで検出されることを確認)。
 - **トップレベル `VarDecls`/`TypeDecls` の自己 typeCheck**: `replFile` の `-O` 経路は
   トップレベルの各構文要素を `typeCheck()`/`preval()` に一切通さず直接 `compile`+`execute`
   する(`Function`/`Primitive` は `compileOn` 内で自己 `typeCheck()` して補っていたが、
@@ -116,11 +144,6 @@ VM専用回帰テスト、`vm-*.c`/`vm-*-ok.c`)。
 
 ## 既知の残課題(意図的に今回は追わなかったもの)
 
-- **`(int*)(intptr_t)0xDeadD0d0` のような typedef を挟んだキャスト連鎖**
-  (`demofiles/invalid-pointer.c`)は、`-O` 経由だとどこかで `Pointer` ではなく
-  生の `Integer` になってしまい、`printf("%p", ...)` がツリーウォーカーの
-  「不正な書き込み」検出に到達する前に別のエラーで止まる。この特定の複雑な
-  キャスト連鎖のみで発生し、この1ファイル以外には影響しない。
 - **`mydemo/fisr.c`(高速逆平方根)はクラッシュしなくなったが数値が正しくない**:
   ビットレベルの float/int 型パニングが `-O` 経由では忠実に再現されていない
   (クラッシュはしない、という Task の目的自体は達成しているが、この特定の

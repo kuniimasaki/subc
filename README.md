@@ -167,5 +167,14 @@ make demo     # demofiles/*.c を全件実行(目視確認用)
   (`depth(5000)`)、以前は深さ32で溢れていた `nfib(32)` が完走することを確認。
 - 追加テスト: `vm-deep-recursion-ok.c`。`make test` → 66 passed, 0 failed(修正前は65)。
 
+**VM(`-O`)にtypedefを挟んだキャスト連鎖の検出漏れを修正**
+- `ptr = (int *)(intptr_t)N;` のような非ゼロ整数のポインタ再代入が `-O` だと
+  `Pointer` に包まれず生の `Integer` のままになっていた原因を特定: ツリーウォーカーの
+  `assign()` は再代入のたびに無条件でこの変換をかけていたが、VMの裸シンボル代入は
+  ただの `iSETGVAR` で変換ロジックが丸ごと欠けていた。変換ロジックを
+  `coerceAssignedValue()` として共通化し、ツリーウォーカー・VM両方から呼ぶように統一。
+- 追加テスト: `vm-cast-chain-invalid-pointer.c`。`make test` → 67 passed, 0 failed
+  (修正前は66)。既知の残課題は「`fisr.c` の数値精度」1件のみ。
+
 各修正は独立したコミットに分割し、コミットのたびに `demofiles/*.c` 全件を実行して
 既存の検出結果(非決定的なヒープアドレスを除く)が意図せず変化していないことを確認している。
