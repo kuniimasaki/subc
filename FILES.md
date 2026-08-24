@@ -115,6 +115,8 @@
 | `vm-local-array-ok.c` | `-O` でローカル配列の宣言(初期化子あり/なし)と添字アクセスが正しく動くことの確認。 |
 | `vm-struct-member-ok.c` | `-O` で構造体宣言(初期化子あり/なし)とメンバアクセス(`s.field`)が正しく動くことの確認。 |
 | `vm-switch-ok.c` | `-O` で `switch`/`case`/`default`(フォールスルー・break・switch内のcontinueが外側ループに伝播すること)が正しく動くことの確認。 |
+| `vm-dangling-pointer.c` | `-O` でも `dangling-pointer.c` と同じスコープ終了処理(dangling pointer検出)が効くことの確認(`iRETURN`のisdead付与+`prim_vm_store_deref`のisdeadチェック追加の回帰テスト)。 |
+| `vm-dangling-pointer-ok-alive.c` | `-O` での陰性ケース: `&i` を渡した別関数がまだ呼び出しスタック上にある間の使用は誤って dead 扱いされないことの確認。 |
 | `evalasan.txt` | `demofiles/Makefile` の `asan_run` で記録した、AddressSanitizer による各バグパターンの実行結果ログ(比較用の参考資料)。 |
 | `evalvar.txt` | 同 `demo`(Valgrind)ターゲットで記録した実行結果ログ(比較用の参考資料)。 |
 | `Makefile` | `demofiles/*.c` を素の gcc / ASan / Valgrind でコンパイル・実行するための補助 Makefile(subc本体のインタプリタとは独立に、比較対象を作るためのもの)。 |

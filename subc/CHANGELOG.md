@@ -434,3 +434,41 @@ opcodeではなく既存の `iCALL`/`Primitive` 経由のプリミティブ呼�
   する(`nfib(8)=67` は正しく計算できることを確認済み)、`typedef` を挟んだ複雑な
   キャスト連鎖(`invalid-pointer.c`)とビットレベルのfloat/int型パニング
   (`fisr.c`)は数値的な正確性まで踏み込めていない。
+
+## 2026-08-24
+
+### VM(`-O`)にスコープ終了処理(dangling pointer検出)を実装
+
+前日の残課題1件目に対応。ツリーウォーカーの `Scope_end()`/`kill_scpp()`
+(関数を抜けるたびにそのスコープの `Variable` を `isdead=1` にマークする仕組み)に
+相当する処理をVMにも実装し、`&localvar` が関数の外へ漏れて後から参照される
+バグ(`demofiles/dangling-pointer.c`)が `-O` 経由でも検出されるようにした。
+
+- VMの `env` はツリーウォーカーの `scopes`(`Scope_begin`/`Scope_end` で管理される
+  入れ子リスト)とは全く別の、呼び出しごとに `iDECL`/パラメータ束縛で積み上がる
+  だけの alist なので、「関数呼び出しが終わったら、その呼び出しで束縛された
+  ローカルだけを殺す」処理をVM独自に実装する必要があった。
+  - `struct Frame` に `baseEnv`(そのクロージャが捕捉していた、パラメータ束縛前の
+    環境)を追加。`iCALL` のClosure分岐で、パラメータを束縛する**前**の
+    `environment` を保存しておく。
+  - `iRETURN` は現在の `env` から `baseEnv` に到達するまで環境チェーンを辿り、
+    見つけた全ての `Variable`(パラメータ+`iDECL`されたローカル)を `isdead=1`
+    にする。各呼び出しの `baseEnv` は(クロージャ捕捉時点の環境なので)独立して
+    いるため、再帰呼び出しで外側の呼び出しのローカルを誤って殺すことはない
+    (`nfib(8)` が引き続き正しく `67` を返すことを確認)。
+- **副次的に発見・修正したバグ**: `prim_vm_store_deref`(`*p = rhs` のVM実装、
+  Task 3で追加)が `assign()` のDereferenceケースが持つ `isdead` チェックを
+  丸ごと欠いていた(Task 3時点でのコピー漏れ、今回の作業とは無関係の既存バグ)。
+  上記のスコープ終了処理を実装しても、この書き込み側のチェックが無ければ
+  検出は発火しないため発覚。`assign()` と同じチェック
+  (`"Var '%s' that you tried to deref is already dead "`)を追加して修正。
+- 追加テスト: `vm-dangling-pointer.c`(`demofiles/dangling-pointer.c` と同じバグを
+  `-O` で実行、`EXIT=1`+`already dead` を確認)、
+  `vm-dangling-pointer-ok-alive.c`(陰性ケース: `&i` を取ったローカル変数がまだ
+  呼び出しスタック上にある間に別関数へ渡して使う、`touch()` が戻っても呼び出し元
+  `main()` のローカルまで誤って殺されないことを確認)。
+- `./scripts/run-tests.sh` → 65 passed, 0 failed(修正前は63)。
+  `demofiles/*.c`(65本)+`mydemo/*.c`(10本)、計75本の `-O` 網羅性スイープは
+  全75本が引き続きクラッシュなく完走。
+- `docs/design/vm-implementation-status.md` を更新(既知の残課題からこの項目を削除、
+  実装の勘所に追記)。

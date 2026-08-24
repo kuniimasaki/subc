@@ -3596,7 +3596,9 @@ oop prim_vm_store_deref(int argc, oop *argv, oop env)
     int offset = get(ptr, Pointer,offset);
     oop type   = get(get(ptr, Pointer,type), Tpointer,target);
     switch (getType(base)) {
-	case Variable: {
+	case Variable: { // &var -- mirrors assign()'s Dereference/Variable case
+	    if (get(base, Variable,isdead))
+		fatal("Var '%s' that you tried to deref is already dead ", toString(get(base, Variable,name)));
 	    if (offset) fatal("pointer modified");
 	    return set(base, Variable,value, rhs);
 	}
@@ -4908,6 +4910,13 @@ oop execute(oop program)
 
     struct Frame {
 	Object  *env;
+	Object  *baseEnv;  // env this call started from (closure's captured
+			   // env, before parameter binding) -- iRETURN kills
+			   // every Variable bound between baseEnv and the
+			   // call's final env, mirroring Scope_end()/
+			   // kill_scpp() so a Pointer{base=Variable} that
+			   // escapes (e.g. `return &localvar;`) is caught by
+			   // getPointer's existing isdead check.
 	oop *code;
 	int      pc;
     } frames[32];
@@ -5112,6 +5121,7 @@ oop execute(oop program)
 		    case Closure: {
 			Object  *function    = get(func, Closure,function);
 			Object  *environment = get(func, Closure,environment);
+			Object  *baseEnv     = environment; // before parameter binding
 			Object  *parameters  = get(function, Function,parameters);
 			int      parc        = get(parameters, List,size);
 			oop *parv        = get(parameters, List,elements);
@@ -5135,9 +5145,10 @@ oop execute(oop program)
 			sp += argc;
 			if (fp < 1) fatal("too many function calls");
 			--fp;
-			frames[fp].env  = env;   env  = environment;
-			frames[fp].code = code;  code = get(function, Function,code);
-			frames[fp].pc   = pc;    pc   = 0;
+			frames[fp].env     = env;   env  = environment;
+			frames[fp].baseEnv = baseEnv;
+			frames[fp].code    = code;  code = get(function, Function,code);
+			frames[fp].pc      = pc;    pc   = 0;
 			assert(code != 0);
 			continue;
 		    }
@@ -5148,6 +5159,14 @@ oop execute(oop program)
 	    }
 	    case iRETURN: {
 		assert(fp < 32);
+		// mirror Scope_end()/kill_scpp(): mark every local bound
+		// during this call (parameters + iDECL'd locals) as dead,
+		// so `return &localvar;` is caught the same way the tree-
+		// walker's Scope_end() catches an escaped stack local.
+		for (oop p = env;  p != frames[fp].baseEnv;  p = get(p, Pair,tail)) {
+		    oop box = get(get(p, Pair,head), Pair,tail);
+		    get(box, Variable,isdead) = 1;
+		}
 		env  = frames[fp].env;
 		code = frames[fp].code;
 		pc   = frames[fp].pc;

@@ -6,12 +6,12 @@ Task 3(`docs/design/task3-vm-audit-and-design.md`)でポインタ安全性フッ
 見つかったギャップを1つずつ埋めた記録。**この文書は現状のスナップショットであり、
 `compileOn()`/`execute()` に手を入れたら更新すること。**
 
-## 現在の状態(2026-08-23 時点)
+## 現在の状態(2026-08-24 時点)
 
-`demofiles/*.c`(63本)+ `mydemo/*.c`(10本)、計73本を `-O` で実行した結果、
-**全73本が `compileOn()`/`execute()` レベルのクラッシュなく最後まで実行できる**
-(調査開始時点は15/62)。`make test` は63 passed, 0 failed(うち14本が`FLAGS=-O`の
-VM専用回帰テスト、`vm-*-ok.c`)。
+`demofiles/*.c`(65本)+ `mydemo/*.c`(10本)、計75本を `-O` で実行した結果、
+**全75本が `compileOn()`/`execute()` レベルのクラッシュなく最後まで実行できる**
+(調査開始時点は15/62)。`make test` は65 passed, 0 failed(うち16本が`FLAGS=-O`の
+VM専用回帰テスト、`vm-*.c`/`vm-*-ok.c`)。
 
 以下、実装済みの機能と、判明している既知の残課題をまとめる。
 
@@ -53,6 +53,25 @@ VM専用回帰テスト、`vm-*-ok.c`)。
 - **`Member`**: `prim_vm_member`/`prim_vm_store_member` は `eval()`/`assign()` の Member
   ケースの素直な移植(`Tstruct,members` から名前でオフセット・型を検索し `getMemory`/
   `setMemory`)。
+- **関数ローカルのスコープ終了処理(dangling pointer検出)**: ツリーウォーカーの
+  `Scope_end()`/`kill_scpp()` は関数を抜けるたびにそのスコープの `Variable` を
+  `isdead=1` にマークし、`&localvar` が外へ漏れて後から参照されるバグ
+  (`demofiles/dangling-pointer.c`)を検出する。VMの `env` はツリーウォーカーの
+  `scopes`(`Scope_begin`/`Scope_end` で管理される入れ子リスト)とは全く別の、
+  呼び出しごとに `iDECL`/パラメータ束縛で積み上がるだけの alist なので、
+  「関数呼び出しが終わったら、その呼び出しで束縛されたローカルだけを殺す」処理を
+  VM独自に実装する必要があった。`struct Frame` に `baseEnv`(そのクロージャが
+  捕捉していた、パラメータ束縛前の環境)を追加し、`iCALL` のClosure分岐で
+  パラメータを束縛する**前**の `environment` を保存。`iRETURN` は現在の `env` から
+  `baseEnv` に到達するまで環境チェーンを辿り、見つけた `Variable` を全て
+  `isdead=1` にする(再帰呼び出しでも各フレームの `baseEnv` は独立しているため、
+  外側の呼び出しのローカルを誤って殺すことはない。`nfib(8)` が正しく `67` を
+  返すことで確認済み)。
+  - **副次的に発見**: `prim_vm_store_deref`(`*p = rhs` のVM実装、Task 3で追加)が
+    `assign()` のDereferenceケースが持つ `isdead` チェックを丸ごと欠いていた
+    (Task 3時点でのコピー漏れ、今回の作業とは無関係の既存バグ)。上記のスコープ
+    終了処理を実装しても、この書き込み側のチェックが無ければ検出は発火しない
+    ため、`assign()` と同じチェックを追加して修正。
 - **トップレベル `VarDecls`/`TypeDecls` の自己 typeCheck**: `replFile` の `-O` 経路は
   トップレベルの各構文要素を `typeCheck()`/`preval()` に一切通さず直接 `compile`+`execute`
   する(`Function`/`Primitive` は `compileOn` 内で自己 `typeCheck()` して補っていたが、
@@ -84,12 +103,6 @@ VM専用回帰テスト、`vm-*-ok.c`)。
 
 ## 既知の残課題(意図的に今回は追わなかったもの)
 
-- **VM は明示的なスコープ終了処理を持たない**: `demofiles/dangling-pointer.c` の
-  「関数を抜けたローカル変数のアドレスを返す」というバグは、ツリーウォーカーでは
-  `Scope_end()` が該当 `Variable` を `isdead` にマークすることで検出されるが、
-  VMの `env` にはスコープ終了処理という概念自体が無いため、`-O` ではこのバグが
-  検出されずに正常終了してしまう。VMにスコープ終了処理を持ち込むのは今回のスコープを
-  超える別作業。
 - **VMの値/フレームスタックは固定32要素**(`oop stack[32]`、`struct Frame frames[32]`)
   で、溢れると `exit(1)` するのみ。`mydemo/fib.c` の `nfib(32)` は(iJMPF修正で
   ようやく本物の再帰になったことで)実際にこの上限を超えて `stack overflow` する
