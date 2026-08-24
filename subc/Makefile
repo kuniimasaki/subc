@@ -24,9 +24,6 @@ testvm : main
 smoke : main
 	./main -vv test.txt
 
-eratosthenes : main
-	./main -vv mydemo/eratosthenes.c
-
 cast :main
 	./main -vv mydemo/cast.c
 
@@ -41,16 +38,22 @@ fisr : main
 
 fib : main
 	./main mydemo/fib.c
-	
+
 fibvm : main
 	./main -O mydemo/fib.c
+
+sieve : main
+	./main -vv mydemo/eratosthenes.c
+
+sievevm : main
+	./main -O -vv mydemo/eratosthenes.c
 
 dang : main
 	./main -vv demofiles/dangling-pointer.c
 
 pdiff : main
 	./main -vv mydemo/pdiff.c
-	
+
 unin : main
 	./main -vv mydemo/unin.c
 

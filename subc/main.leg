@@ -1386,6 +1386,16 @@ oop toStringOn(oop obj, oop str)
 		toStringOn(type, str);
 	    break;
 	}
+	case Closure: {
+	    // -O's compileOn Function case leaves a Closure (not the bare
+	    // Function node preval() returns for the same top-level form
+	    // under the tree-walker) as a top-level definition's own
+	    // "statement value" -- reachable via `-O -vv`'s "=> %s" result
+	    // printout. No separate rendering needed: just describe the
+	    // underlying function, same as the tree-walker would.
+	    toStringOn(get(obj, Closure,function), str);
+	    break;
+	}
 	case Function: {
 	    toStringOn(get(get(obj, Function,type), Tfunction,result), str);
 	    String_append(str, ' ');
@@ -4894,6 +4904,7 @@ enum opcode_t { iHALT = 0, iPUSH, iPOP,
     iCLOSE,
     iCALL, iRETURN,
     iJMP, iJMPF,
+    iSAVEENV, iRESETENV, iDROPENV,
 };
 
 oop stackError(char *reason)
@@ -4945,6 +4956,9 @@ void disassemble(oop program)
 	    case iRETURN:	printf("RETURN\n");				break;
 	    case iJMP:		printf("JMP\t");	println(code[pc++]);	break;
 	    case iJMPF:		printf("JMPF\t");	println(code[pc++]);	break;
+	    case iSAVEENV:	printf("SAVEENV\n");				break;
+	    case iRESETENV:	printf("RESETENV\n");				break;
+	    case iDROPENV:	printf("DROPENV\n");				break;
 	}
     }
 }
@@ -4998,6 +5012,26 @@ oop execute(oop program)
     int frameCap = 32;
     struct Frame *frames = MALLOC(sizeof(struct Frame) * frameCap);
     int fp = frameCap;
+
+    // Per-loop-iteration scope cleanup: While/For save env once at loop
+    // entry (iSAVEENV) and reset it after every iteration (iRESETENV,
+    // reached by both falling off the end of the body and by `continue`),
+    // killing (isdead=1) whatever the iteration's own VarDecls iDECL'd --
+    // mirroring Scope_begin()/Scope_end() around the tree-walker's own
+    // per-iteration Block execution. Without this, a loop-body-local
+    // declaration (`for (...) { int j = ...; ... }`) keeps consing onto
+    // the same env chain forever (only torn down at the *function's*
+    // return, via iRETURN's baseEnv walk), so iGETGVAR/iSETGVAR's linear
+    // assoc() scan gets one entry longer every iteration -- turning an
+    // O(n) loop into O(n^2). Confirmed empirically: a 20000-iteration loop
+    // declaring its own loop-local went from 46.8s to sub-0.1s after this
+    // fix. Grows upward (ordinary REALLOC, no repositioning needed) since,
+    // unlike stack/frames, nothing here is ever addressed relative to the
+    // top -- iDROPENV (loop exit, via `break` or the condition going
+    // false) additionally pops.
+    int envStackCap = 32;
+    oop *envStack = MALLOC(sizeof(oop) * envStackCap);
+    int esp = 0;
 
 # define push(O)	do {								\
 			    if (sp == 0) growDownArray((void **)&stack, sizeof(oop), &sp, &stackCap);	\
@@ -5277,6 +5311,32 @@ oop execute(oop program)
 		int dest = _integerValue(code[pc++]);
 		oop cond = pop();
 		if (isFalse(cond)) pc = dest;
+		continue;
+	    }
+	    case iSAVEENV: {
+		if (esp == envStackCap) {
+		    envStackCap *= 2;
+		    envStack = REALLOC(envStack, sizeof(oop) * envStackCap);
+		}
+		envStack[esp++] = env;
+		continue;
+	    }
+	    case iRESETENV: { // per-iteration cleanup; leaves the saved marker in place for next time
+		oop saved = envStack[esp - 1];
+		for (oop p = env;  p != saved;  p = get(p, Pair,tail)) {
+		    oop box = get(get(p, Pair,head), Pair,tail);
+		    get(box, Variable,isdead) = 1;
+		}
+		env = saved;
+		continue;
+	    }
+	    case iDROPENV: { // loop exit; same cleanup, plus discards the marker for good
+		oop saved = envStack[--esp];
+		for (oop p = env;  p != saved;  p = get(p, Pair,tail)) {
+		    oop box = get(get(p, Pair,head), Pair,tail);
+		    get(box, Variable,isdead) = 1;
+		}
+		env = saved;
 		continue;
 	    }
 	}
@@ -5570,22 +5630,33 @@ void compileOn(oop exp, oop program, oop cs, oop bs)
 # define PATCH(J, L)    List_set(program, J+1, newInteger(L))
 
 	case While: {
+	    // iSAVEENV/iRESETENV/iDROPENV bound the env growth a loop-body-
+	    // local VarDecls would otherwise cause to "per iteration" instead
+	    // of "per iteration ever run" -- see their definitions in
+	    // execute() for why. Fallthrough (body finishes normally) and
+	    // `continue` both converge on Lcont (iRESETENV then back to the
+	    // condition check); `break` and the condition going false both
+	    // land on L2 (iDROPENV, final cleanup).
 	    oop continues = newList();
 	    oop breaks    = newList();
 	    oop cond = get(exp, While,condition);
 	    oop body = get(exp, While,expression);
 	    EMITio(iPUSH, nil);
+	    EMITi(iSAVEENV);
 	    LABEL(L1);
 	    compileOn(cond, program, cs, bs); // break/continue apply to enclosing loop
 	    LABEL(J1);
 	    EMITio(iJMPF, nil);
 	    EMITi(iPOP);
 	    compileOn(body, program, continues, breaks);
+	    LABEL(Lcont);
+	    EMITi(iRESETENV);
 	    EMITii(iJMP, L1);
 	    LABEL(L2);
+	    EMITi(iDROPENV);
 	    PATCH(J1, L2);
 	    for (int i = get(continues, List,size);  i--;)
-		PATCH(_integerValue(get(continues, List,elements)[i]), L1);
+		PATCH(_integerValue(get(continues, List,elements)[i]), Lcont);
 	    for (int i = get(breaks, List,size);  i--;)
 		PATCH(_integerValue(get(breaks, List,elements)[i]), L2);
 	    return;
@@ -5600,6 +5671,12 @@ void compileOn(oop exp, oop program, oop cs, oop bs)
 	    // loop-exit) both always see exactly one extra value sitting
 	    // there, which the next cycle (or nobody, at L2) is responsible
 	    // for discarding -- keeping per-iteration stack depth constant.
+	    // iSAVEENV goes *after* init (so a `for (int i = 0; ...)`
+	    // declaration lives below the saved marker and survives across
+	    // iterations, the same as While's placement relative to its body)
+	    // -- iRESETENV at L3 then bounds whatever the body itself
+	    // iDECL's to "per iteration" (see the opcodes' own comments in
+	    // execute() for why this matters).
 	    oop init = get(exp, For,initialiser);
 	    oop cond = get(exp, For,condition);
 	    oop step = get(exp, For,update);
@@ -5608,6 +5685,7 @@ void compileOn(oop exp, oop program, oop cs, oop bs)
 	    oop breaks    = newList();
 	    compileOn(init, program, cs, bs);
 	    EMITi(iPOP);			// init runs once, outside the loop; discard its statement-value
+	    EMITi(iSAVEENV);
 	    EMITio(iPUSH, nil);		// baseline "for" statement value if the body never runs
 	    LABEL(L1);
 	    compileOn(cond, program, cs, bs);
@@ -5616,12 +5694,14 @@ void compileOn(oop exp, oop program, oop cs, oop bs)
 	    EMITi(iPOP);
 	    compileOn(body, program, continues, breaks);
 	    LABEL(L3);			// continue jumps here: run step, skipping the rest of body
+	    EMITi(iRESETENV);		// per-iteration cleanup of whatever body just iDECL'd
 	    EMITi(iPOP);		// discard body's (or continue's) leftover value
 	    compileOn(step, program, cs, bs);
 	    EMITi(iPOP);		// discard step's own statement-value
 	    EMITio(iPUSH, nil);
 	    EMITii(iJMP, L1);
 	    LABEL(L2);
+	    EMITi(iDROPENV);
 	    PATCH(J1, L2);
 	    for (int i = get(continues, List,size);  i--;)
 		PATCH(_integerValue(get(continues, List,elements)[i]), L3);
