@@ -21,7 +21,7 @@
 | `main.leg` | **正本**。PEG文法定義+評価器(ツリーウォーカー・バイトコードVM)のC実装が同居する単一ソース。手で編集するのはここだけ。 |
 | `main.c` | `main.leg` から `leg -o main.c main.leg` で生成される派生物。直接編集しない。 |
 | `main` | `main.c` をビルドした実行バイナリ(`gcc -std=c99 -Werror -Wall -Wno-unused -g -o main main.c -lgc -lm`)。 |
-| `Makefile` | ビルド(`make`)・テスト実行(`make test`/`make testvm`)・デモ一括実行(`make demo`/`make demov`/`make demovm`)・個別デモ実行などのターゲット定義。`testvm`/`demovm` は `-O`(バイトコードVM)強制版。 |
+| `Makefile` | ビルド(`make`)・テスト実行(`make test`/`make testvm`)・デモ一括実行(`make demo`/`make demov`/`make demovm`)・個別デモ実行などのターゲット定義。`testvm`/`demovm` は `-O`(バイトコードVM)強制版。`kitchensink`/`kitchensinkvm` は `mydemo/kitchen-sink.c` をツリーウォーカー/VMで実行(時間計測付き)。 |
 | `CHANGELOG.md` | 日付・タスク単位で構成された詳細な変更履歴(発見したバグ、原因、修正、検証方法を記録)。 |
 | `claude-code-prompt.md` | ユーザー自身が管理する元プロンプト文書(このセッションでは編集・参照のみ、git管理外)。 |
 | `test.txt` | 基本文法(関数・構造体・配列・ポインタ・typedef 等)を一通り試す手動スモークテスト用ソース(`make smoke` で実行)。 |
@@ -140,6 +140,7 @@
 | ファイル | 説明 |
 |---|---|
 | `fib.c` | 再帰フィボナッチ(`nfib`)。ベンチマーク・動作確認用。 |
+| `kitchen-sink.c` | 実装済みの機能(制御構文・再帰・構造体・配列・ポインタ演算・ヒープ・`string.h`・`stdio.h`の`sprintf`/`snprintf`含む・`stdlib.h`・`math.h`・`ctype.h`・複合代入・キャスト)を横断的に使う統合テスト。`make kitchensink`/`make kitchensinkvm`。開発時にこれ経由で2件の重大バグ(構造体ポインタフィールド読み出しでのMemory追跡消失、`-O`固有のタイミング依存SIGSEGV)を発見。 |
 | `fib.py` | 同ロジックの Python 版(比較用リファレンス)。 |
 | `eratosthenes.c` | エラトステネスの篩。`malloc` した配列を使うサンプル。 |
 | `fisr.c` | 高速逆平方根(Quake III の `Q_rsqrt`)。ビット演算・キャストの多いサンプル。 |

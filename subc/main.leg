@@ -3857,6 +3857,32 @@ oop getPointer(oop ptr, int delta)
   return 0;
 }
 
+// Reading a pointer-typed value back out of raw memory (a struct field
+// holding another pointer -- `p->next`, etc.) needs to recover the exact
+// same Memory tracking object malloc/calloc/realloc created for that
+// address, not fabricate a fresh one: every such allocation is appended
+// to `heap` for exactly this purpose (see prim_malloc et al.), so look it
+// up there first. Without this, getMemory()'s Tpointer case used to
+// always wrap the raw address in a brand new Memory object with heap
+// hardcoded to 0 -- so `head = head->next; free(head);` fatal'd with
+// "freed memory was not allocated in the heap" even though head->next
+// definitely came from malloc(), and worse, reading the same pointer
+// field twice produced two independently-tracked Memory objects for the
+// same real address: freeing through one left the other's own ,free
+// flag at 0, so a subsequent access through *that* copy went undetected
+// as a use-after-free. Found while writing mydemo/kitchen-sink.c (a
+// linked list built via a small `push()` helper, then freed by walking
+// `head = head->next` -- the second node in the list already failed to
+// free).
+oop findHeapMemory(void *addr)
+{
+    int  n    = get(heap, List,size);
+    oop *elts = get(heap, List,elements);
+    for (int i = 0;  i < n;  ++i)
+	if (get(elts[i], Memory,base) == addr) return elts[i];
+    return nil;
+}
+
 oop getMemory(oop memory, int offset, oop type)
 {
     int memsize = get(memory, Memory,size);
@@ -3874,9 +3900,10 @@ oop getMemory(oop memory, int offset, oop type)
 	case Tpointer: {
 	    void *value = *(void **)addr;
 	    oop target = get(type, Tpointer,target);
+	    oop existing = value ? findHeapMemory(value) : nil;
 	    switch (getType(target)) {
-	      case Tstruct: 	return newPointer(   type, newMemory(value, typeSize(target), 0), 0);
-	      case Tchar:	return newPointer(t_pchar, newMemory(value, strlen(value)+1,  0), 0);
+	      case Tstruct: 	return newPointer(   type, !isNil(existing) ? existing : newMemory(value, typeSize(target), 0), 0);
+	      case Tchar:	return newPointer(t_pchar, !isNil(existing) ? existing : newMemory(value, strlen(value)+1,  0), 0);
 	      default:	break;
 	    }
 	    fatal("cannot load pointer to '%s' from memory", getTypeName(target));
@@ -5461,9 +5488,25 @@ oop execute(oop program)
     oop *code = get(program, List,elements);
     int pc = 0;
 
-    int stackCap = 32;
-    oop *stack = MALLOC(sizeof(oop) * stackCap);
-    int sp = stackCap; // clear the stack
+    // stack/frames/envStack (below) are `static` -- persisting across
+    // separate execute() calls, of which there is one per top-level
+    // declaration/definition under -O, not just one per program -- rather
+    // than fresh MALLOC()'d locals thrown away every time execute()
+    // returns. Found via a hard-to-reproduce, GC-timing-sensitive SIGSEGV
+    // in List_append() (while *parsing* an unrelated later top-level
+    // form) that stopped reproducing once these were made static: a
+    // buffer GC_malloc'd and then immediately abandoned on every single
+    // trivial extern declaration's own throwaway execute() call
+    // apparently gave Boehm GC's conservative collector a window to
+    // reclaim-and-reuse that memory while something was still (validly,
+    // just not conservatively-provably) depending on it, corrupting an
+    // unrelated later allocation. Persisting them removes that window
+    // entirely -- and is strictly more efficient besides, since it
+    // avoids malloc/free churn for every trivial top-level form.
+    static int stackCap = 32;
+    static oop *stack = 0;
+    if (!stack) stack = MALLOC(sizeof(oop) * stackCap);
+    int sp = stackCap; // clear the stack (only the index resets per call)
 
     oop env = nil;
 
@@ -5479,8 +5522,9 @@ oop execute(oop program)
 	oop *code;
 	int      pc;
     };
-    int frameCap = 32;
-    struct Frame *frames = MALLOC(sizeof(struct Frame) * frameCap);
+    static int frameCap = 32;
+    static struct Frame *frames = 0;
+    if (!frames) frames = MALLOC(sizeof(struct Frame) * frameCap);
     int fp = frameCap;
 
     // Per-loop-iteration scope cleanup: While/For save env once at loop
@@ -5499,8 +5543,9 @@ oop execute(oop program)
     // unlike stack/frames, nothing here is ever addressed relative to the
     // top -- iDROPENV (loop exit, via `break` or the condition going
     // false) additionally pops.
-    int envStackCap = 32;
-    oop *envStack = MALLOC(sizeof(oop) * envStackCap);
+    static int envStackCap = 32;
+    static oop *envStack = 0;
+    if (!envStack) envStack = MALLOC(sizeof(oop) * envStackCap);
     int esp = 0;
 
 # define push(O)	do {								\

@@ -48,6 +48,12 @@ sieve : main
 sievevm : main
 	./main -O -vv mydemo/eratosthenes.c
 
+kitchensink : main
+	time ./main mydemo/kitchen-sink.c
+
+kitchensinkvm : main
+	time ./main -O mydemo/kitchen-sink.c
+
 dang : main
 	./main -vv demofiles/dangling-pointer.c
 
